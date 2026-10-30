@@ -19,7 +19,14 @@ cp "$bin_dir/reminder" "$app/Contents/MacOS/reminder"
 cp Resources/Info.plist "$app/Contents/Info.plist"
 build_id="$(uuidgen)"
 /usr/libexec/PlistBuddy -c "Set :ReminderBuildID $build_id" "$app/Contents/Info.plist"
-identity="${SIGNING_IDENTITY:--}"
+identity="${SIGNING_IDENTITY:-}"
+if [[ -z "$identity" && -f "$HOME/.config/reminders-cli/signing-identity" ]]; then
+    identity="$(< "$HOME/.config/reminders-cli/signing-identity")"
+    [[ "$identity" =~ ^[[:xdigit:]]{40}$ ]] || {
+        echo 'Invalid local signing fingerprint; refusing ad-hoc fallback.' >&2; exit 1;
+    }
+fi
+identity="${identity:--}"
 if [[ "$identity" == - ]]; then
     echo 'WARNING: ad-hoc signing is for this POC only; rebuilds may invalidate TCC consent.' >&2
 fi
