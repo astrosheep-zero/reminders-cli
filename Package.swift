@@ -15,6 +15,6 @@ let package = Package(
         .testTarget(name: "ReminderCoreTests", dependencies: ["ReminderCore"]),
         .testTarget(name: "ReminderRuntimeTests", dependencies: ["ReminderRuntime"]),
         .testTarget(name: "ReminderNativeTests", dependencies: ["ReminderNative", "ReminderCore"]),
-        .testTarget(name: "ReminderCLITests", dependencies: ["ReminderCLI"])
+        .testTarget(name: "ReminderCLITests", dependencies: ["ReminderCLI", "ReminderCore", "ReminderRuntime"])
     ]
 )

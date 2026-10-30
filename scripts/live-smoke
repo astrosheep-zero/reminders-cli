@@ -1,0 +1,90 @@
+#!/bin/bash
+# Deliberately excluded from default verification. Requires a fresh, explicit opt-in.
+set -euo pipefail
+if [[ "${REMINDER_LIVE_SMOKE:-}" != 'I_UNDERSTAND_THIS_WRITES_TEST_DATA' ]]; then
+    echo 'Refusing live access. Read README.md, then set REMINDER_LIVE_SMOKE=I_UNDERSTAND_THIS_WRITES_TEST_DATA.' >&2
+    exit 1
+fi
+cd "$(dirname "$0")/.."
+exec python3 - "${REMINDER_EXECUTABLE:-$PWD/dist/reminder}" <<'PY'
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import uuid
+
+executable = str(Path(sys.argv[1]).resolve(strict=True))
+run_id = str(uuid.uuid4())
+name = 'RemindersCLI-POC-' + run_id
+receipts = Path('dist') / ('live-smoke-' + run_id)
+receipts.mkdir(mode=0o700, parents=True)
+print('Receipts:', receipts.resolve(), flush=True)
+step = 0
+
+def run(*args):
+    global step
+    step += 1
+    completed = subprocess.run([executable, *args, '--json'], capture_output=True, text=True, timeout=40)
+    receipt = {'args': args, 'exit': completed.returncode, 'stdout': completed.stdout, 'stderr': completed.stderr}
+    path = receipts / f'{step:02d}.json'
+    path.write_text(json.dumps(receipt, indent=2))
+    path.chmod(0o600)
+    try:
+        envelope = json.loads(completed.stdout)
+    except Exception as error:
+        raise RuntimeError('No valid result; stop, retain receipts, DO NOT blindly retry.') from error
+    if completed.returncode != 0 or envelope.get('status') != 'ok':
+        raise RuntimeError('Command failed/unsupported/unknown. No cleanup attempted. Inspect receipt ' + str(path))
+    return envelope['result']
+
+def only_uuid(value):
+    if not isinstance(value, str) or str(uuid.UUID(value)).lower() != value.lower():
+        raise RuntimeError('Refusing non-UUID or name-only target')
+    return value
+
+def reminder(result, expected_id):
+    items = result.get('reminders', [])
+    if len(items) != 1 or items[0]['id'].lower() != expected_id.lower():
+        raise RuntimeError('Unexpected readback ID; stop without cleanup')
+    return items[0]
+
+try:
+    doctor = run('doctor')['diagnostics']
+    if doctor['authorization'] not in ('fullAccess', 'authorized'):
+        raise RuntimeError('Full access is not already granted. Smoke never calls setup.')
+    created = run('lists', 'add', name)['mutation']
+    lists = created.get('lists', [])
+    if len(lists) != 1 or lists[0]['fields']['name'] != name:
+        raise RuntimeError('Missing run-owned list receipt; no name-based cleanup allowed')
+    list_id = only_uuid(lists[0]['id'])
+    (receipts / 'owned-list-id').write_text(list_id + '\n')
+    created = run('add', 'POC fixture ' + run_id, '--list', list_id)['mutation']
+    items = created.get('reminders', [])
+    if len(items) != 1 or items[0]['fields']['listID'].lower() != list_id.lower():
+        raise RuntimeError('Unexpected created reminder; stop without cleanup')
+    item_id = only_uuid(items[0]['id'])
+    item = reminder(run('show', item_id), item_id)
+    run('edit', item_id, '--version', item['version'], '--set-json', '{"notes":"isolated POC fixture"}')
+    item = reminder(run('show', item_id), item_id)
+    if item['fields'].get('notes') != 'isolated POC fixture':
+        raise RuntimeError('Edit readback mismatch')
+    run('done', item_id, '--version', item['version'])
+    item = reminder(run('show', item_id), item_id)
+    if not item['fields']['completed']:
+        raise RuntimeError('Completion readback mismatch')
+    run('delete', item_id, '--version', item['version'])
+    # Never enumerate/reconcile the user's global deleted journal as a smoke-test shortcut.
+    run('restore', item_id, '--list', list_id)
+    item = reminder(run('show', item_id), item_id)
+    if item['fields']['listID'].lower() != list_id.lower():
+        raise RuntimeError('Restore destination mismatch')
+    run('delete', item_id, '--version', item['version'])
+    # Only the UUID returned for THIS run's newly created list is eligible for cleanup.
+    run('lists', 'delete', list_id, '--yes')
+    print('Isolated local CRUD/delete/restore completed. No remote iCloud delivery claim.')
+except Exception as error:
+    print(str(error), file=sys.stderr)
+    print('Stopped. Fixtures may remain; receipts retain exact owned IDs. No broad/name-only cleanup.', file=sys.stderr)
+    sys.exit(1)
+PY
