@@ -25,10 +25,18 @@ private final class MemoryBackend: ReminderBackend {
     var lookupCount = 0
     var hideRestoredChild = false
     var detachRestoredChild = false
+    var restoreAuxiliaryIDs: [String] = []
     func checkSupport(for command: Command) throws {
         if unsupported { throw Failure(.unsupported, "Missing native selector") }
     }
-    func catalog() throws -> Catalog { if let readError { throw readError }; return data }
+    var catalogProjections: [Bool] = []
+    func catalog(includeTags: Bool) throws -> Catalog {
+        catalogProjections.append(includeTags)
+        if let readError { throw readError }
+        var result = data
+        if !includeTags { result.tags = [] }
+        return result
+    }
     func find(_ query: ReminderQuery) throws -> [Reminder] {
         if let readError { throw readError }
         return items.values.filter { item in
@@ -78,8 +86,11 @@ private final class MemoryBackend: ReminderBackend {
             item.fields.listID = listID
             if detachRestoredChild && id != ids[0] { item.fields.parentID = nil }
             items[id] = item
+            if let parent = item.fields.parentID, items[parent] != nil, !items[parent]!.childIDs.contains(id) {
+                items[parent]!.childIDs.append(id)
+            }
         }
-        return MutationResult(affectedIDs: ids)
+        return MutationResult(affectedIDs: ids + restoreAuxiliaryIDs)
     }
     func list(_ action: ListAction) throws -> MutationResult { try begin(); actions.append(.list(action)); return MutationResult(affectedIDs: ["list"]) }
     func group(_ action: GroupAction) throws -> MutationResult { try begin(); actions.append(.group(action)); return MutationResult(affectedIDs: ["group"]) }
@@ -97,6 +108,68 @@ struct OperationsTests {
         let backend = MemoryBackend()
         backend.items["R1"] = Reminder(id: "R1", fields: ReminderFields(title: "Task", listID: "L1"))
         try body(backend, directory.appendingPathComponent("deleted.json"))
+    }
+    @Test func testCatalogProjectionSeparatesResolutionFromTagCounts() throws {
+        try fixture { backend, url in
+            let engine = Operations(backend: backend, journalURL: url)
+            var patch = ReminderPatch(); patch.title = .set("Edited")
+            let version = try backend.items["R1"]!.version()
+            #expect(engine.execute(.update(id: "R1", version: version, patch: patch)).status == .ok)
+            #expect(backend.catalogProjections == [false])
+            backend.catalogProjections = []
+            #expect(engine.execute(.catalog(includeTags: false)).status == .ok)
+            #expect(engine.execute(.catalog(includeTags: true)).status == .ok)
+            #expect(engine.execute(.tag(.rename("work", name: "job"))).status == .ok)
+            #expect(backend.catalogProjections == [false, true, true])
+        }
+    }
+    @Test func restoredChildReceiptAllowsOnlyItsActualActiveParentAndKeepsParentJournal() throws {
+        try fixture { backend, url in
+            let child = Reminder(id: "CHILD", fields: ReminderFields(title: "Child", listID: "L1", parentID: "R1"))
+            backend.deletedItems[child.id] = child
+            backend.restoreAuxiliaryIDs = ["R1"]
+            let journal = DeletionJournal(url: url)
+            try journal.transaction { entries in
+                entries = [DeletionEntry(id: child.id, title: "Child", listID: "L1", parentID: "R1", time: Date(), state: .confirmed),
+                    DeletionEntry(id: "R1", title: "Task", listID: "L1", parentID: nil, time: Date(), state: .pending)]
+            }
+            let result = Operations(backend: backend, journalURL: url).execute(.restore(id: "CHILD", list: nil))
+            #expect(result.status == .ok)
+            guard case .mutation(let receipt) = result.result else { Issue.record("Expected restore receipt"); return }
+            #expect(Set(receipt.affectedIDs) == ["CHILD", "R1"])
+            #expect(try journal.read().map(\.id) == ["R1"])
+        }
+        try fixture { backend, url in
+            let child = Reminder(id: "CHILD", fields: ReminderFields(title: "Child", listID: "L1", parentID: "R1"))
+            backend.deletedItems[child.id] = child
+            backend.items["OTHER"] = Reminder(id: "OTHER", fields: ReminderFields(title: "Unrelated", listID: "L1"))
+            backend.restoreAuxiliaryIDs = ["OTHER"]
+            let journal = DeletionJournal(url: url)
+            try journal.transaction { entries in entries = [DeletionEntry(id: child.id, title: "Child", listID: "L1", parentID: "R1", time: Date(), state: .confirmed)] }
+            let result = Operations(backend: backend, journalURL: url).execute(.restore(id: "CHILD", list: nil))
+            #expect(result.status == .unknown)
+            #expect(try journal.read().map(\.id) == ["CHILD"])
+        }
+    }
+    @Test func journaledUnrelatedRestoreReceiptNeverBecomesSubtreeOrCompactedEvidence() throws {
+        try fixture { backend, url in
+            let child = Reminder(id: "CHILD", fields: ReminderFields(title: "Child", listID: "L1", parentID: "R1"))
+            backend.deletedItems[child.id] = child
+            backend.items["OTHER"] = Reminder(id: "OTHER", fields: ReminderFields(title: "Unrelated", listID: "L1"))
+            backend.restoreAuxiliaryIDs = ["R1", "OTHER"]
+            let journal = DeletionJournal(url: url)
+            let saved = [
+                DeletionEntry(id: child.id, title: "Child", listID: "L1", parentID: "R1", time: Date(), state: .confirmed),
+                DeletionEntry(id: "R1", title: "Task", listID: "L1", parentID: nil, time: Date(), state: .pending),
+                DeletionEntry(id: "OTHER", title: "Unrelated", listID: "L1", parentID: nil, time: Date(), state: .pending)
+            ]
+            try journal.transaction { $0 = saved }
+            let result = Operations(backend: backend, journalURL: url).execute(.restore(id: "CHILD", list: nil))
+            #expect(result.status == .unknown)
+            #expect(result.error?.code == .outcomeUnknown)
+            #expect(Set(result.error?.affectedIDs ?? []) == ["CHILD", "R1", "OTHER"])
+            #expect(try journal.read() == saved)
+        }
     }
     @Test func testNamesAreExactAmbiguityFailsAndIDsIgnoreCase() throws {
         try fixture { backend, url in
@@ -212,7 +285,7 @@ struct OperationsTests {
             #expect(engine.execute(.find(ReminderQuery())).result == .reminders([]))
             let failure = Failure(.permission, "denied", affectedIDs: ["original-evidence"])
             backend.readError = failure
-            #expect(engine.execute(.catalog).error == failure)
+            #expect(engine.execute(.catalog(includeTags: true)).error == failure)
             #expect(engine.execute(.show("R1")).error == failure)
         }
     }

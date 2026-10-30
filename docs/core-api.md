@@ -33,7 +33,7 @@ empty image additions/removals. Use explicit tagged values when supplying a patc
 
 - `.find(ReminderQuery)`, `.show(String)`, `.image(reminderID:imageID:)`;
 - `.create(ReminderDraft)`, `.update(id:version:patch:)`, `.complete(id:version:completed:)`;
-- `.delete(id:version:)`, `.restore(id:list:)`, `.deleted`, `.catalog`;
+- `.delete(id:version:)`, `.restore(id:list:)`, `.deleted`, `.catalog(includeTags: Bool)`;
 - `.list(ListAction)`, `.group(GroupAction)`, `.section(SectionAction)`, `.tag(TagAction)`,
   `.smartList(SmartListAction)`, `.template(TemplateAction)`.
 
@@ -102,10 +102,18 @@ No invitation or system-default-list setter is implied.
 
 ## Containers
 
-`Catalog` contains lists, groups, sections, tags, smartLists, templates. List metadata includes name,
+`Catalog` contains lists, groups, sections, tags, smartLists, templates. `Command.catalog(includeTags:)`
+and `ReminderBackend.catalog(includeTags:)` explicitly select tag-inclusive or metadata-only projection.
+All Core name/reference resolution requests `includeTags: false`; tag actions request true. False intentionally
+omits tags rather than claiming there are no tags, while true requires accurate counts or an error. This
+prevents ordinary title edits from enumerating every reminder/image just to resolve a list/member name.
+List metadata includes name,
 color/icon/group/pin/kind/sort/position/default flag/members. ListAction creates, **fully replaces**
 editable list fields, clears completed, or deletes. Full replacement is intentional; a CLI must require
-an explicit full definition rather than fill unspecified fields with defaults. GroupAction creates,
+an explicit full definition rather than fill unspecified fields with defaults. Native list `position` is
+an ordering directive, not a readable/clearable snapshot field: Native returns nil on read and nil in a
+full replacement means no reordering directive. Other editable list fields remain full replacement.
+GroupAction creates,
 renames, deletes an empty group. SectionAction creates/renames/moves/deletes (deleting retains reminders).
 TagAction renames/merges or removes a tag. SmartListAction creates, fully replaces, deletes;
 SmartFilter explicitly models tags/date/time/priority/flag/lists/location and preserves unknown fields
@@ -120,7 +128,7 @@ not a fabricated zero-write failure.
 - `checkSupport(for: Command)` is read-only preflight: reject missing methods, unsupported enum/field/
   filter shapes before any save. It may diagnose permissions but must not request them. Defaults fail
   unsupported, never return empty success. Actual native support is not promised by Core models.
-- Read methods: `catalog()`, `find(_:)`, `reminder(id:)`, `image(reminderID:imageID:)`,
+- Read methods: `catalog(includeTags:)`, `find(_:)`, `reminder(id:)`, `image(reminderID:imageID:)`,
   `restorableState(id:)`. Reads/preflight **must not save**. `reminder(id:)` uses native by-ID lookup and
   case-insensitive IDs. If an implementation lacks native lookup it must document its fallback.
 - `createReminder(_:)`, `updateReminder(id:patch:)`, `deleteReminders(ids:)`,
@@ -136,6 +144,10 @@ not a fabricated zero-write failure.
 - `restoreReminder` gets saved child IDs plus root and target list. It must restore/report all known
   children and any additional native-discovered children. Core independently reads back every ID and
   verifies list and saved parent relationships; any missing/failed read is unknown, not compactMap loss.
+  A restored subtask may also touch its already-active parent. Only the restored root's actual top-level
+  target-list parent may appear as an auxiliary affected ID, and that parent must list the restored root
+  in childIDs. A saved journal parent must match; arbitrary auxiliary records fail confirmation. The
+  auxiliary parent is never treated as a restored child or removed from the deletion journal.
 - `restorableState` returns authoritative active/restorable/absent. Missing selector, authorization,
   account read, or unsupported evidence is a thrown Failure, **not absent**. No SQL enumeration required.
 

@@ -35,7 +35,8 @@ public enum Command: Codable, Sendable, Equatable {
     case delete(id: String, version: String)
     case restore(id: String, list: String?)
     case deleted
-    case catalog
+    /// Metadata-only projections intentionally omit tags; requested tags include truthful counts.
+    case catalog(includeTags: Bool)
     case image(reminderID: String, imageID: String)
     case list(ListAction)
     case group(GroupAction)
@@ -115,7 +116,7 @@ public enum RestorableState: String, Codable, Sendable { case active, restorable
 public protocol ReminderBackend: AnyObject {
     /// Must reject unsupported commands/fields BEFORE mutationStarted. Never returns fabricated empty success.
     func checkSupport(for command: Command) throws
-    func catalog() throws -> Catalog
+    func catalog(includeTags: Bool) throws -> Catalog
     func find(_ query: ReminderQuery) throws -> [Reminder]
     func reminder(id: String) throws -> Reminder?
     func image(reminderID: String, imageID: String) throws -> ImageInput
@@ -138,7 +139,7 @@ public protocol ReminderBackend: AnyObject {
 /// Defaults fail closed. Override checkSupport along with the methods actually supported.
 public extension ReminderBackend {
     func checkSupport(for command: Command) throws { throw Failure(.unsupported, "Backend does not support this command") }
-    func catalog() throws -> Catalog { throw Failure(.unsupported, "Catalog unavailable") }
+    func catalog(includeTags: Bool) throws -> Catalog { throw Failure(.unsupported, "Catalog unavailable") }
     func find(_ query: ReminderQuery) throws -> [Reminder] { throw Failure(.unsupported, "Find unavailable") }
     func reminder(id: String) throws -> Reminder? { throw Failure(.unsupported, "Reminder lookup unavailable") }
     func image(reminderID: String, imageID: String) throws -> ImageInput { throw Failure(.unsupported, "Image read unavailable") }

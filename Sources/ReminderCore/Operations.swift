@@ -46,10 +46,10 @@ public final class Operations: @unchecked Sendable {
     }
     private func run(_ command: Command) throws -> OperationResult {
         switch command {
-        case .catalog: return .catalog(try backend.catalog())
+        case .catalog(let includeTags): return .catalog(try backend.catalog(includeTags: includeTags))
         case .find(var query):
             if query.list != nil || query.smartList != nil || query.section != nil {
-                let catalog = try backend.catalog()
+                let catalog = try backend.catalog(includeTags: false)
                 if let list = query.list { query.list = try resolveList(list, catalog).id }
                 if let smart = query.smartList { query.smartList = try resolve(smart, catalog.smartLists.map { ($0.id, $0.name) }) }
                 if let section = query.section {
@@ -63,7 +63,7 @@ public final class Operations: @unchecked Sendable {
             guard let image = item.images.first(where: { same($0.id, imageID) }) else { throw Failure(.notFound, "Image not found") }
             return .image(try backend.image(reminderID: item.id, imageID: image.id))
         case .create(var draft):
-            let catalog = try backend.catalog()
+            let catalog = try backend.catalog(includeTags: false)
             if draft.fields.listID.isEmpty {
                 if let parent = draft.fields.parentID { draft.fields.listID = try reminder(parent).fields.listID }
                 else {
@@ -82,7 +82,7 @@ public final class Operations: @unchecked Sendable {
             let current = try reminder(reference)
             try check(current, version)
             var fields = try patch.applying(to: current.fields)
-            try resolveFields(&fields, catalog: backend.catalog())
+            try resolveFields(&fields, catalog: backend.catalog(includeTags: false))
             try Validation.fields(fields, images: patch.addImages)
             guard patch.removeImageIDs.allSatisfy({ id in current.images.contains { same($0.id, id) } }) else {
                 throw Failure(.notFound, "Image to remove not found")
@@ -113,7 +113,7 @@ public final class Operations: @unchecked Sendable {
         case .group(let action): return try group(action)
         case .section(let action): return try section(action)
         case .tag(let action):
-            let catalog = try backend.catalog()
+            let catalog = try backend.catalog(includeTags: true)
             let name: String
             switch action { case .rename(let old, _), .delete(let old, _): name = old }
             guard catalog.tags.contains(where: { $0.name == name }) else { throw Failure(.notFound, "Tag not found") }
@@ -251,22 +251,51 @@ public final class Operations: @unchecked Sendable {
         let entry = entries.first { $0.id == savedID }
         let id = entry?.id ?? reference
         guard let list = target ?? entry?.listID else { throw Failure(.invalidInput, "Restore requires saved original list or explicit target") }
-        let listID = try resolveList(list, backend.catalog()).id
+        let listID = try resolveList(list, backend.catalog(includeTags: false)).id
         guard try backend.restorableState(id: id) == .restorable else { throw Failure(.notFound, "Reminder is not restorable") }
         let expected = entries.filter { same($0.id, id) || $0.parentID.map { same($0, id) } == true }.map(\.id)
         // A saved child can only rejoin an active top-level parent in the target list.
         // Restoring a whole root+children tree instead validates internal parents after native restore.
         try validateParent(id: id, parentID: entry?.parentID, listID: listID,
                            hasChildren: expected.contains { !same($0, id) })
+        try backend.checkSupport(for: .restore(id: id, list: listID))
         let result = try mutate { try backend.restoreReminder(id: id, listID: listID, knownChildIDs: expected.filter { !same($0, id) }) }
         guard case .mutation(var mutation) = result else { return result }
         let ids = Array(Set([id] + expected + mutation.affectedIDs)).sorted()
         mutation.affectedIDs = ids; evidence = mutation
+        // A restored subtask can also change its already-active parent. That
+        // parent is auxiliary evidence, not another restored/deleted child.
+        let restoredRoot = try byID(id)
+        let auxiliaryParentID = restoredRoot.fields.parentID
+        if let savedParent = entry?.parentID {
+            guard same(auxiliaryParentID, savedParent) else { throw Failure(.conflict, "Restored root changed its saved parent") }
+        } else if entry != nil, auxiliaryParentID != nil {
+            throw Failure(.conflict, "Restored root gained an unexpected parent")
+        }
+        // Journal membership is evidence of a past delete, not proof that an
+        // arbitrary receipt ID belongs to this restored tree. Establish actual
+        // subtree membership from the restored root before consulting entries.
+        let restoredTreeIDs = [id] + restoredRoot.childIDs
+        guard restoredRoot.childIDs.allSatisfy({ childID in ids.contains { same($0, childID) } }) else {
+            throw Failure(.conflict, "Restore receipt omitted an actual child")
+        }
         var restored: [Reminder] = []
         for affectedID in ids {
             // Do not compactMap: a missing child or a failed read invalidates confirmation.
             let item = try byID(affectedID)
             guard same(item.fields.listID, listID) else { throw Failure(.conflict, "Restored reminder is in unexpected list") }
+            if auxiliaryParentID.map({ same($0, affectedID) }) == true {
+                guard !same(affectedID, id), item.fields.parentID == nil,
+                      item.childIDs.contains(where: { same($0, id) }) else {
+                    throw Failure(.conflict, "Auxiliary restore parent is not the active top-level parent of the restored root")
+                }
+                restored.append(item)
+                mutation.reminders = restored; evidence = mutation
+                continue
+            }
+            guard same(affectedID, id) || (restoredRoot.childIDs.contains(where: { same($0, affectedID) }) && same(item.fields.parentID, id)) else {
+                throw Failure(.conflict, "Restore receipt contains an unrelated record")
+            }
             if let saved = entries.first(where: { same($0.id, affectedID) }) {
                 let matches = saved.parentID.map { parent in item.fields.parentID.map { same($0, parent) } == true } ?? (item.fields.parentID == nil)
                 guard matches else { throw Failure(.conflict, "Restored reminder has unexpected parent") }
@@ -284,13 +313,13 @@ public final class Operations: @unchecked Sendable {
         mutation.reminders = restored; evidence = mutation
         try io { try journal.transaction { current in
             current.removeAll { candidate in
-                ids.contains(where: { same($0, candidate.id) }) && entries.contains(candidate)
+                restoredTreeIDs.contains(where: { same($0, candidate.id) }) && entries.contains(candidate)
             }
         } }
         return .mutation(mutation)
     }
     private func list(_ input: ListAction) throws -> OperationResult {
-        let catalog = try backend.catalog()
+        let catalog = try backend.catalog(includeTags: false)
         func fields(_ original: ListFields, currentID: String? = nil) throws -> ListFields {
             var f = original; try Validation.list(f)
             if let group = f.groupID { f.groupID = try resolve(group, catalog.groups.map { ($0.id, $0.name) }) }
@@ -326,7 +355,7 @@ public final class Operations: @unchecked Sendable {
         }
     }
     private func group(_ input: GroupAction) throws -> OperationResult {
-        let catalog = try backend.catalog(); let action: GroupAction
+        let catalog = try backend.catalog(includeTags: false); let action: GroupAction
         switch input {
         case .create: action = input
         case .rename(let group, let name): action = .rename(try resolve(group, catalog.groups.map { ($0.id, $0.name) }), name: name)
@@ -340,7 +369,7 @@ public final class Operations: @unchecked Sendable {
         return try mutate { try backend.group(action) }
     }
     private func section(_ input: SectionAction) throws -> OperationResult {
-        let catalog = try backend.catalog(); let action: SectionAction
+        let catalog = try backend.catalog(includeTags: false); let action: SectionAction
         func sectionID(_ section: String, _ list: String) throws -> String {
             try resolve(section, catalog.sections.filter { same($0.listID, list) }.map { ($0.id, $0.name) })
         }
@@ -361,7 +390,7 @@ public final class Operations: @unchecked Sendable {
         return try mutate { try backend.section(action) }
     }
     private func smartList(_ input: SmartListAction) throws -> OperationResult {
-        let catalog = try backend.catalog(); let action: SmartListAction
+        let catalog = try backend.catalog(includeTags: false); let action: SmartListAction
         func definition(_ original: SmartList) throws -> SmartList {
             var result = original; try Validation.name(result.name); try Validation.filters(result.filters)
             result.filters = try result.filters.map { filter in
@@ -383,7 +412,7 @@ public final class Operations: @unchecked Sendable {
         return try mutate { try backend.smartList(action) }
     }
     private func template(_ input: TemplateAction) throws -> OperationResult {
-        let catalog = try backend.catalog(); let action: TemplateAction
+        let catalog = try backend.catalog(includeTags: false); let action: TemplateAction
         switch input {
         case .create(let name, let list, let include): action = .create(name: name, list: try resolveList(list, catalog).id, includeCompleted: include)
         case .use(let template, let name): action = .use(try resolve(template, catalog.templates.map { ($0.id, $0.name) }), newListName: name)
