@@ -1,7 +1,7 @@
 # Reminders CLI POC — implementation authority
 
 ## Scope and acceptance
-Implement a native Reminders CLI, not Notes, MCP, GUI, agent configuration, daemon, or database reader. References at ../apple-mcp and ../remctl are read-only architectural/API evidence, not dependencies. Independently implement code; do not copy unlicensed reference implementations. Production budget ~6000 physical lines (comments/blanks included), review scope if approaching 9000, never compress readability to meet a number.
+Implement a native Reminders CLI, not Notes, MCP, GUI, agent configuration, daemon, or database reader. References at ~/playground/reminders/apple-mcp and ~/playground/reminders/remctl are read-only architectural/API evidence, not dependencies; they remain outside this relocated repository. Independently implement code; do not copy unlicensed reference implementations. Production budget ~6000 physical lines (comments/blanks included), review scope if approaching 9000, never compress readability to meet a number.
 
 Four responsibility modules: CLI, Runtime, Core, Native. Small C/Objective-C targets are implementation boundaries, not extra business layers. Swift 6 / macOS 26+ / Apple silicon. Foundation/EventKit allowed; no SwiftUI dependency. No third-party dependencies required.
 
