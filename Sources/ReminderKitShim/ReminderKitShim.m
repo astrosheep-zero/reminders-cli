@@ -199,7 +199,14 @@ static NSDictionary *ColorValue(id value) {
     NSDictionary *changes = Required(O(request, "trackedReminderChangeItems"), @"Native tracked reminder changes");
     if (![changes isKindOfClass:NSDictionary.class]) Refuse(RNErrorBackend, @"Tracked native reminder changes are not a dictionary");
     NSMutableSet *identifiers = [NSMutableSet set];
-    for (id change in changes.allValues) [identifiers addObject:Required(ObjectID(change), @"Tracked reminder ID")];
+    for (id container in changes.allValues) {
+        if (![container isKindOfClass:C(@"REMSaveRequestTrackedValueContainer")])
+            Refuse(RNErrorBackend, @"Tracked native reminder value is not a container");
+        // Dictionary values wrap weak/template change items; do not copy or ask
+        // the container itself for objectID when capturing this request's receipt.
+        id change = Required(O(container, "valueWithoutPerformingCopy"), @"Tracked reminder change item");
+        [identifiers addObject:Required(ObjectID(change), @"Tracked reminder ID")];
+    }
     return [identifiers.allObjects sortedArrayUsingSelector:@selector(compare:)];
 }
 - (void)commit:(id)request {

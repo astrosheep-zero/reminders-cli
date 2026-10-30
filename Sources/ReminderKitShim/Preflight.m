@@ -43,6 +43,7 @@ BOOL RNPreflight(NSArray<NSString *> *features, NSError **error) {
         Instance(@"REMSaveRequest", @"initWithStore:", @"@", @[@"@"]);
         Instance(@"REMSaveRequest", @"saveSynchronouslyWithError:", @"B", @[@"^@"]);
         Instance(@"REMSaveRequest", @"trackedReminderChangeItems", @"@", @[]);
+        Instance(@"REMSaveRequestTrackedValueContainer", @"valueWithoutPerformingCopy", @"@", @[]);
         for (NSString *feature in features) {
             if ([feature isEqual:@"reminder.create"]) {
                 Instance(@"REMSaveRequest", @"addReminderWithTitle:toListChangeItem:", @"@", @[@"@", @"@"]);
