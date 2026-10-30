@@ -404,7 +404,11 @@ static NSDictionary *PlaceValue(id trigger) {
 - (NSString *)sectionIDForReminder:(id)reminder {
     NSError *error = nil;
     id section = ((id (*)(id, SEL, id, NSError **))objc_msgSend)(_sectionView, Selector("fetchListSectionWithReminderID:error:"), O(reminder, "objectID"), &error);
-    if (error) Refuse(RNErrorBackend, error.localizedDescription);
+    if (error) {
+        // ReminderKit reports an ordinary unsectioned reminder as this error.
+        if (!section && [error.domain isEqualToString:@"com.apple.reminderkit"] && error.code == -3009) return nil;
+        Refuse(RNErrorBackend, error.localizedDescription);
+    }
     return section ? ObjectID(section) : nil;
 }
 - (NSDictionary *)positionForReminder:(id)reminder sectionID:(NSString *)sectionID {
