@@ -2,6 +2,7 @@ import Foundation
 import Testing
 import ReminderCore
 @testable import ReminderCLI
+@testable import ReminderFacade
 
 struct DoctorAndTextTests {
     @Test func doctorProbesOnlyWithPriorFullAccessAndNeverPrompts() {

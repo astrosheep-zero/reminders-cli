@@ -24,7 +24,7 @@ public enum RuntimeIssue: Error, Equatable, Sendable {
     case workerExited
 }
 
-public enum SandboxState: Sendable {
+public enum SandboxState: String, Sendable {
     case sandboxed, notSandboxed, unknown
 
     /// Best effort process sandbox observation, never a Reminders permission check.

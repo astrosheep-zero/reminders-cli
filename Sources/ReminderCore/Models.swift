@@ -79,10 +79,8 @@ public struct ImageAttachment: Codable, Sendable, Equatable {
     public var fileName: String
     public var contentType: String
     public var byteCount: Int
-    public var contentHash: String
-    public init(id: String, fileName: String, contentType: String, byteCount: Int, contentHash: String) {
-        self.id = id; self.fileName = fileName; self.contentType = contentType
-        self.byteCount = byteCount; self.contentHash = contentHash
+    public init(id: String, fileName: String, contentType: String, byteCount: Int) {
+        self.id = id; self.fileName = fileName; self.contentType = contentType; self.byteCount = byteCount
     }
 }
 public enum Position: Codable, Sendable, Equatable { case before(String), after(String)
@@ -152,7 +150,7 @@ public struct Reminder: Codable, Sendable, Equatable {
             }
         }
         canonical.images = images.map { image in var copy = image; copy.id = image.id.lowercased(); return copy }
-            .sorted { ($0.id, $0.fileName, $0.contentHash) < ($1.id, $1.fileName, $1.contentHash) }
+            .sorted { ($0.id, $0.fileName, $0.contentType, $0.byteCount) < ($1.id, $1.fileName, $1.contentType, $1.byteCount) }
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         return SHA256.hash(data: try encoder.encode(canonical)).map { String(format: "%02x", $0) }.joined()
     }
@@ -180,25 +178,9 @@ public struct ReminderPatch: Codable, Sendable, Equatable {
     public var addImages: [ImageInput] = []
     public var removeImageIDs: [String] = []
     public init() {}
-    private enum CodingKeys: String, CodingKey {
+    fileprivate enum CodingKeys: String, CodingKey {
         case title, listID, notes, due, start, recurrence, earlyAlerts, location, contact, url
         case priority, flagged, urgent, completed, tags, parentID, sectionID, position, assigneeID, addImages, removeImageIDs
-    }
-    /// Omitted keys mean absent. Null is not a Change and must not silently erase state.
-    public init(from decoder: any Decoder) throws {
-        let values = try decoder.container(keyedBy: CodingKeys.self)
-        func change<T>(_ key: CodingKeys) throws -> Change<T> where T: Codable & Sendable & Equatable {
-            values.contains(key) ? try values.decode(Change<T>.self, forKey: key) : .absent
-        }
-        title = try change(.title); listID = try change(.listID); notes = try change(.notes)
-        due = try change(.due); start = try change(.start); recurrence = try change(.recurrence)
-        earlyAlerts = try change(.earlyAlerts); location = try change(.location); contact = try change(.contact)
-        url = try change(.url); priority = try change(.priority); flagged = try change(.flagged)
-        urgent = try change(.urgent); completed = try change(.completed); tags = try change(.tags)
-        parentID = try change(.parentID); sectionID = try change(.sectionID); position = try change(.position)
-        assigneeID = try change(.assigneeID)
-        addImages = values.contains(.addImages) ? try values.decode([ImageInput].self, forKey: .addImages) : []
-        removeImageIDs = values.contains(.removeImageIDs) ? try values.decode([String].self, forKey: .removeImageIDs) : []
     }
     public func applying(to old: ReminderFields) throws -> ReminderFields {
         guard title != .clear, listID != .clear else { throw Failure(.invalidInput, "Title and list cannot be cleared") }
@@ -216,6 +198,16 @@ public struct ReminderPatch: Codable, Sendable, Equatable {
         f.parentID = parentID.applying(to: f.parentID); f.sectionID = sectionID.applying(to: f.sectionID)
         f.position = position.applying(to: f.position); f.assigneeID = assigneeID.applying(to: f.assigneeID)
         return f
+    }
+}
+// Synthesis still decodes every real field. Defaults are scoped to patch keys only;
+// present nulls must fail, not turn into absence or an empty attachment directive.
+private extension KeyedDecodingContainer where Key == ReminderPatch.CodingKeys {
+    func decode<T>(_ type: Change<T>.Type, forKey key: Key) throws -> Change<T> {
+        contains(key) ? try Change<T>(from: superDecoder(forKey: key)) : .absent
+    }
+    func decode<T: Decodable>(_ type: [T].Type, forKey key: Key) throws -> [T] {
+        contains(key) ? try [T](from: superDecoder(forKey: key)) : []
     }
 }
 public struct ReminderDraft: Codable, Sendable, Equatable {

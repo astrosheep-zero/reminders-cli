@@ -1,8 +1,7 @@
 import Foundation
-import CryptoKit
 import ReminderCore
 
-/// The only dictionary-shaped values in Swift belong to the Native/ObjC boundary.
+/// Untyped bridge dictionaries stay at the Native/ObjC boundary.
 /// Missing required keys and unknown scalars are errors, not plausible defaults.
 enum Translation {
     static let frequencies: [Frequency] = [.daily, .weekly, .monthly, .yearly, .hourly]
@@ -125,30 +124,18 @@ enum Translation {
             position: position(raw["position"] as? [String: Any]), assigneeID: raw["assigneeID"] as? String)
         let images: [[String: Any]] = try value(raw, "images")
         return try Reminder(id: value(raw, "id"), fields: f, images: images.map { image in
-            let bytes: Data = try value(image, "data")
-            return try ImageAttachment(id: value(image, "id"), fileName: value(image, "fileName"), contentType: value(image, "type"),
-                byteCount: bytes.count, contentHash: SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined())
+            try ImageAttachment(id: value(image, "id"), fileName: value(image, "fileName"), contentType: value(image, "type"),
+                byteCount: value(image, "size"))
         }, childIDs: value(raw, "childIDs"))
     }
     /// Only creation starts from full fields. Updates translate sparse Change
     /// values below, including explicit set-to-same intent.
     static func creationFields(_ fields: ReminderFields) throws -> [String: Any] {
-        var input = ReminderPatch()
-        input.title = .set(fields.title); input.listID = .set(fields.listID)
-        input.notes = fields.notes.map(Change.set) ?? .absent
-        input.due = fields.due.map(Change.set) ?? .absent
-        input.start = fields.start.map(Change.set) ?? .absent
-        input.recurrence = fields.recurrence.map(Change.set) ?? .absent
-        input.earlyAlerts = .set(fields.earlyAlerts); input.tags = .set(fields.tags)
-        input.location = fields.location.map(Change.set) ?? .absent
-        input.contact = fields.contact.map(Change.set) ?? .absent
-        input.url = fields.url.map(Change.set) ?? .absent
-        input.priority = .set(fields.priority); input.flagged = .set(fields.flagged)
-        input.urgent = .set(fields.urgent); input.completed = .set(fields.completed)
-        input.parentID = fields.parentID.map(Change.set) ?? .absent
-        input.sectionID = fields.sectionID.map(Change.set) ?? .absent
-        input.assigneeID = fields.assigneeID.map(Change.set) ?? .absent
-        input.position = fields.position.map(Change.set) ?? .absent
+        // Core omits nil fields. Lift exactly the encoded fields into sparse sets,
+        // sharing patch translation rather than maintaining a second field-by-field copy.
+        let object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(fields)) as! [String: Any]
+        let sets = object.mapValues { ["set": ["_0": $0]] }
+        let input = try JSONDecoder().decode(ReminderPatch.self, from: JSONSerialization.data(withJSONObject: sets))
         return try patch(input)
     }
     static func patch(_ patch: ReminderPatch) throws -> [String: Any] {
@@ -162,9 +149,10 @@ enum Translation {
         }
         guard patch.title != .clear, patch.listID != .clear else { throw Failure(.invalidInput, "Title and list cannot be cleared") }
         guard patch.position != .clear else { throw Failure(.unsupported, "Native manual ordering has no clear-position operation") }
-        try apply("title", patch.title) { $0 }
-        try apply("listID", patch.listID) { $0 }
-        try apply("notes", patch.notes) { $0 }
+        for (key, change) in [("title", patch.title), ("listID", patch.listID), ("notes", patch.notes),
+                              ("url", patch.url), ("parentID", patch.parentID), ("sectionID", patch.sectionID), ("assigneeID", patch.assigneeID)] {
+            try apply(key, change) { $0 }
+        }
         try apply("due", patch.due, encode: components)
         try apply("start", patch.start, encode: components)
         try apply("repeat", patch.recurrence, encode: recurrence)
@@ -176,15 +164,11 @@ enum Translation {
         }
         try apply("location", patch.location, encode: location)
         try apply("contact", patch.contact) { ["phones": $0.phones, "emails": $0.emails] }
-        try apply("url", patch.url) { $0 }
         try apply("priority", patch.priority, clear: 0) { priorities[$0]! }
         try apply("flagged", patch.flagged, clear: false) { $0 }
         try apply("urgent", patch.urgent, clear: false) { $0 }
         try apply("completed", patch.completed, clear: false) { $0 }
         try apply("tags", patch.tags, clear: [String]()) { $0 }
-        try apply("parentID", patch.parentID) { $0 }
-        try apply("sectionID", patch.sectionID) { $0 }
-        try apply("assigneeID", patch.assigneeID) { $0 }
         try apply("position", patch.position, encode: position)
         if !patch.removeImageIDs.isEmpty { result["removeImages"] = patch.removeImageIDs }
         return result

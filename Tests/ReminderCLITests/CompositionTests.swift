@@ -3,6 +3,7 @@ import Foundation
 import ReminderCore
 import ReminderRuntime
 @testable import ReminderCLI
+@testable import ReminderFacade
 
 /// Implements the current Core protocol, not a compatibility API or a native-behavior claim.
 private final class FixtureBackend: ReminderBackend {
@@ -23,7 +24,7 @@ private final class FixtureBackend: ReminderBackend {
         deleted = true; saved += 1
         return MutationResult(affectedIDs: ids)
     }
-    func restoreReminder(id: String, listID: String, knownChildIDs: [String]) throws -> MutationResult {
+    func restoreReminder(id: String, listID: String, knownChildIDs: [String], parentID: String?) throws -> MutationResult {
         item.fields.listID = listID; deleted = false; saved += 1
         return MutationResult(affectedIDs: [id], reminders: [item])
     }

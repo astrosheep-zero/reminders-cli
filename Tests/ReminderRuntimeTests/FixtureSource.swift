@@ -48,9 +48,11 @@ if mode == "hangAfter" { mark(); holdForever() }
 if mode == "partialAfter" { raw("{\"type\":\"result\",\"payload\":\""); exit(0) }
 if mode == "badAfter" { raw("garbage\n"); exit(0) }
 if mode == "corruptThenMarker" {
+    // Deliberately corrupt peer: make its possible side effect observable before
+    // exposing the malformed line, otherwise Runtime may kill it before mark().
+    mark()
     raw("native-output-without-newline")
     try worker.mutationStarted()
-    mark() // Represents a save after the marker was fully committed.
     holdForever()
 }
 if mode == "duplicateMutation" { raw("{\"type\":\"mutationStarted\"}\n"); exit(0) }

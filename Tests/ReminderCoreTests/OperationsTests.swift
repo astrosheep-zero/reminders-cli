@@ -26,6 +26,7 @@ private final class MemoryBackend: ReminderBackend {
     var hideRestoredChild = false
     var detachRestoredChild = false
     var restoreAuxiliaryIDs: [String] = []
+    var restoreParentIDs: [String?] = []
     func checkSupport(for command: Command) throws {
         if unsupported { throw Failure(.unsupported, "Missing native selector") }
     }
@@ -75,8 +76,8 @@ private final class MemoryBackend: ReminderBackend {
         for id in ids { deletedItems[id] = items.removeValue(forKey: id) }
         return MutationResult(affectedIDs: ids)
     }
-    func restoreReminder(id: String, listID: String, knownChildIDs: [String]) throws -> MutationResult {
-        try begin()
+    func restoreReminder(id: String, listID: String, knownChildIDs: [String], parentID: String?) throws -> MutationResult {
+        try begin(); restoreParentIDs.append(parentID)
         var seen: Set<String> = [id]
         let children = (deletedItems[id]?.childIDs ?? []) + knownChildIDs
         let ids = [id] + children.filter { seen.insert($0).inserted }
@@ -85,6 +86,7 @@ private final class MemoryBackend: ReminderBackend {
             guard var item = deletedItems.removeValue(forKey: id) else { continue }
             item.fields.listID = listID
             if detachRestoredChild && id != ids[0] { item.fields.parentID = nil }
+            if id == ids[0], let parentID { item.fields.parentID = parentID }
             items[id] = item
             if let parent = item.fields.parentID, items[parent] != nil, !items[parent]!.childIDs.contains(id) {
                 items[parent]!.childIDs.append(id)
@@ -210,7 +212,7 @@ struct OperationsTests {
             { $0.fields.urgent = true }, { $0.fields.completed = true }, { $0.fields.tags = ["tag"] },
             { $0.fields.parentID = "P" }, { $0.fields.sectionID = "S" }, { $0.fields.position = .after("A") },
             { $0.fields.assigneeID = "M" }, { $0.childIDs = ["C"] },
-            { $0.images = [ImageAttachment(id: "I", fileName: "x", contentType: "image/png", byteCount: 2, contentHash: "hash")] }
+            { $0.images = [ImageAttachment(id: "I", fileName: "x", contentType: "image/png", byteCount: 2)] }
         ]
         for change in changes { var item = original; change(&item); #expect(try item.version() != version) }
         let bytes = try JSONEncoder().encode(original)
@@ -431,6 +433,7 @@ struct OperationsTests {
                 let result = engine.execute(.restore(id: "R1", list: scenario == "crossList" ? "Work" : nil))
                 if scenario == "valid" {
                     #expect(result.status == .ok); #expect(backend.mutationCalls == 2)
+                    #expect(backend.restoreParentIDs == ["P"])
                     #expect(parentReads >= 2) // preflight and after native restore
                     #expect(try DeletionJournal(url: url).read().isEmpty)
                 } else {

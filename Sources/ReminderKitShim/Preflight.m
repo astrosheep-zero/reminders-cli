@@ -1,32 +1,31 @@
 #import "ReminderKitShim.h"
 #import <objc/runtime.h>
 
-// A closed set of operation capabilities. No caller can supply a selector or class.
-// Storage targets below are deliberate: ReminderKit forwards many change-item
-// accessors, so respondsToSelector: alone would incorrectly reject working APIs.
+// Closed capability -> ABI table. Each signature is: Class selector return arguments...
+// A leading + denotes a factory. Storage targets are intentional: forwarded change-item
+// accessors do not reliably respond to respondsToSelector:. No caller supplies a selector.
 static void Unsupported(NSString *message) {
     @throw [NSException exceptionWithName:@"RNFailure" reason:message userInfo:@{@"code": @(RNErrorUnsupported)}];
 }
-static void MethodABI(NSString *className, NSString *selector, BOOL classMethod, NSString *result, NSArray<NSString *> *arguments) {
-    Class cls = NSClassFromString(className);
-    SEL sel = NSSelectorFromString(selector);
-    Method method = classMethod ? class_getClassMethod(cls, sel) : class_getInstanceMethod(cls, sel);
+static void CheckSignature(NSString *signature) {
+    NSArray *parts = [signature componentsSeparatedByString:@" "];
+    NSString *className = parts[0], *selector = parts[1], *result = parts[2];
+    BOOL factory = [className hasPrefix:@"+"];
+    Class cls = NSClassFromString(factory ? [className substringFromIndex:1] : className);
+    Method method = factory ? class_getClassMethod(cls, NSSelectorFromString(selector)) : class_getInstanceMethod(cls, NSSelectorFromString(selector));
     if (!method) Unsupported([NSString stringWithFormat:@"Native API unavailable: %@.%@", className, selector]);
     char *returnType = method_copyReturnType(method);
-    BOOL valid = returnType && [result isEqualToString:@(returnType)] && method_getNumberOfArguments(method) == arguments.count + 2;
+    BOOL valid = returnType && [result isEqualToString:@(returnType)] && method_getNumberOfArguments(method) == parts.count - 1;
     free(returnType);
-    for (NSUInteger i = 0; valid && i < arguments.count; i++) {
-        char *argument = method_copyArgumentType(method, (unsigned)i + 2);
-        valid = argument && [arguments[i] isEqualToString:@(argument)];
+    for (NSUInteger i = 3; valid && i < parts.count; i++) {
+        char *argument = method_copyArgumentType(method, (unsigned)i - 1);
+        valid = argument && [parts[i] isEqualToString:@(argument)];
         free(argument);
     }
     if (!valid) Unsupported([NSString stringWithFormat:@"Native ABI changed: %@.%@", className, selector]);
 }
-static void Instance(NSString *className, NSString *selector, NSString *result, NSArray<NSString *> *arguments) {
-    MethodABI(className, selector, NO, result, arguments);
-}
-static void Factory(NSString *className, NSString *selector, NSArray<NSString *> *arguments) {
-    MethodABI(className, selector, YES, @"@", arguments);
+static void CheckSignatures(NSString *signatures) {
+    for (NSString *signature in [signatures componentsSeparatedByString:@"; "]) CheckSignature(signature);
 }
 
 BOOL RNPreflight(NSArray<NSString *> *features, NSError **error) {
@@ -34,142 +33,65 @@ BOOL RNPreflight(NSArray<NSString *> *features, NSError **error) {
         NSError *loadError = nil;
         if (![[NSBundle bundleWithPath:@"/System/Library/PrivateFrameworks/ReminderKit.framework"] loadAndReturnError:&loadError])
             Unsupported(loadError.localizedDescription ?: @"ReminderKit unavailable");
-        Instance(@"REMStore", @"initUserInteractive:", @"@", @[@"B"]);
-        Instance(@"REMListSectionsDataView", @"initWithStore:", @"@", @[@"@"]);
-        Instance(@"REMTemplatesDataView", @"initWithStore:", @"@", @[@"@"]);
-        Factory(@"REMReminder", @"objectIDWithUUID:", @[@"@"]);
-        Factory(@"REMReminderFetchOptions", @"fetchOptionsIncludingDueDateDeltaAlerts", @[]);
-        Factory(@"REMReminderFetchOptions", @"fetchOptionsIncludingConcealed", @[]);
-        Instance(@"REMSaveRequest", @"initWithStore:", @"@", @[@"@"]);
-        Instance(@"REMSaveRequest", @"saveSynchronouslyWithError:", @"B", @[@"^@"]);
-        Instance(@"REMSaveRequest", @"trackedReminderChangeItems", @"@", @[]);
-        Instance(@"REMSaveRequestTrackedValueContainer", @"valueWithoutPerformingCopy", @"@", @[]);
+        CheckSignatures(@"REMStore initUserInteractive: @ B; REMListSectionsDataView initWithStore: @ @; REMTemplatesDataView initWithStore: @ @; "
+            "+REMReminder objectIDWithUUID: @ @; +REMReminderFetchOptions fetchOptionsIncludingDueDateDeltaAlerts @; +REMReminderFetchOptions fetchOptionsIncludingConcealed @; "
+            "REMSaveRequest initWithStore: @ @; REMSaveRequest saveSynchronouslyWithError: B ^@; REMSaveRequest trackedReminderChangeItems @; REMSaveRequestTrackedValueContainer valueWithoutPerformingCopy @");
+        NSDictionary<NSString *, NSString *> *table = @{
+            @"reminder.create": @"REMSaveRequest addReminderWithTitle:toListChangeItem: @ @ @",
+            @"reminder.update": @"REMSaveRequest updateReminder: @ @",
+            @"reminder.delete": @"REMReminderChangeItem removeFromList v",
+            @"reminder.restore": @"REMListChangeItem undeleteRemindersWithoutUndoWithIDs: v @; REMStore fetchReminderIncludingMarkedForDeleteWithObjectID:error: @ @ ^@; "
+                "REMReminderStorage setListID: v @; REMReminderSubtaskContextChangeItem addReminderChangeItem: v @",
+            @"title": @"REMReminderChangeItem setTitleAsString: v @",
+            @"notes": @"REMReminderChangeItem setNotesAsString: v @",
+            @"due": @"REMReminderChangeItem setDueDateComponentsWithAlarmsIfNeeded: v @; REMReminderChangeItem setDueDateComponents: v @; REMReminderChangeItem removeAlarm: v @",
+            @"start": @"REMReminderStorage setStartDateComponents: v @",
+            @"priority": @"REMReminderStorage setPriority: v Q",
+            @"flagged": @"REMReminderStorage setFlagged: v q",
+            @"urgent": @"REMReminderUrgentAlarmContextChangeItem setIsUrgentStateEnabledForCurrentUser: v B",
+            @"completed": @"REMReminderChangeItem setCompleted: v B; REMSaveRequest setCloneCompletedRecurrentRemindersAtSave: v B",
+            @"repeat": @"REMReminderChangeItem removeAllRecurrenceRules v; "
+                "REMReminderChangeItem addRecurrenceRuleWithFrequency:interval:daysOfTheWeek:daysOfTheMonth:monthsOfTheYear:weeksOfTheYear:daysOfTheYear:setPositions:end: @ q q @ @ @ @ @ @ @; "
+                "+REMRecurrenceDayOfWeek dayOfWeek:weekNumber: @ q q; +REMRecurrenceEnd recurrenceEndWithEndDate: @ @; +REMRecurrenceEnd recurrenceEndWithOccurrenceCount: @ Q",
+            @"early": @"REMDueDateDeltaInterval initWithUnit:count: @ q q; REMReminderDueDateDeltaAlertContextChangeItem addDueDateDeltaAlertWithDueDateDelta: @ @; REMReminderDueDateDeltaAlertContextChangeItem removeAllFetchedDueDateDeltaAlerts v",
+            @"tags": @"REMReminderHashtagContextChangeItem addHashtagWithType:name: @ q @; REMReminderHashtagContextChangeItem removeAllHashtags v; REMReminderHashtagContextChangeItem removeHashtag: v @",
+            @"location": @"REMAlarmLocationTrigger initWithStructuredLocation:proximity: @ @ q; REMAlarmVehicleTrigger initWithEvent: @ q; REMStructuredLocation initWithTitle: @ @; "
+                "REMStructuredLocation setLatitude: v d; REMStructuredLocation setLongitude: v d; REMStructuredLocation setRadius: v d; REMReminderChangeItem addAlarmWithTrigger: @ @",
+            @"contact": @"REMContactRepresentation initWithPhones:emails: @ @ @; REMReminderStorage setContactHandles: v @",
+            @"url": @"REMReminderAttachmentContextChangeItem setURLAttachmentWithURL: @ @; REMReminderAttachmentContextChangeItem removeURLAttachments v",
+            @"addImages": @"REMReminderAttachmentContextChangeItem addImageAttachmentWithURL:width:height:error: @ @ Q Q ^@",
+            @"removeImages": @"REMReminderAttachmentContextChangeItem removeAttachment: v @",
+            @"assigneeID": @"REMReminderAssignmentContextChangeItem addAssignmentWithAssignee:originator:status: @ @ @ q; REMReminderAssignmentContextChangeItem removeAllAssignments v",
+            @"listID": @"REMListChangeItem addReminderChangeItem: v @; REMReminderSubtaskContextChangeItem addReminderChangeItem: v @",
+            @"position": @"REMListChangeItem insertReminderChangeItem:afterReminderChangeItem: v @ @; REMListChangeItem insertReminderChangeItem:beforeReminderChangeItem: v @ @; "
+                "REMReminderSubtaskContextChangeItem insertReminderChangeItem:afterReminderChangeItem: v @ @; REMReminderSubtaskContextChangeItem insertReminderChangeItem:beforeReminderChangeItem: v @ @",
+            @"sectionID": @"REMMembership initWithMemberIdentifier:groupIdentifier:isObsolete:modifiedOn: @ @ @ B @; REMMemberships initWithMembershipByMemberIdentifier: @ @; REMListSectionContextChangeItem setUnsavedMembershipsOfRemindersInSections: v @",
+            @"list.create": @"REMSaveRequest addListWithName:toAccountChangeItem:listObjectID: @ @ @ @",
+            @"list.update": @"REMSaveRequest updateList: @ @; REMListStorage setName: v @; REMListStorage setSortingStyle: v @; REMListChangeItem setIsPinned: v B; "
+                "REMListGroceryContextChangeItem setShouldCategorizeGroceryItems: v B; REMListGroceryContextChangeItem setGroceryLocaleID: v @",
+            @"list.delete": @"REMListChangeItem removeFromParent v",
+            @"group.create": @"REMSaveRequest addGroupWithName:toAccountGroupContextChangeItem: @ @ @",
+            @"group.rename": @"REMListStorage setName: v @",
+            @"section.create": @"REMSaveRequest addListSectionWithDisplayName:toListSectionContextChangeItem: @ @ @",
+            @"section.rename": @"REMListSectionStorage setDisplayName: v @",
+            @"section.move": @"REMListSectionContextChangeItem setUnsavedSectionIDsOrdering: v @; REMListSectionContextChangeItem setShouldUpdateSectionsOrdering: v B",
+            @"section.delete": @"REMListSectionChangeItem removeFromList v",
+            @"smart.create": @"REMSaveRequest addCustomSmartListWithName:toAccountChangeItem:smartListObjectID: @ @ @ @",
+            @"smart.update": @"REMSmartListStorage setFilterData: v @; REMSmartListCustomContextChangeItem setName: v @; REMSmartListStorage setMinimumSupportedVersion: v q; REMSmartListStorage setEffectiveMinimumSupportedVersion: v q",
+            @"smart.delete": @"REMSmartListChangeItem removeFromParentWithAccountChangeItem: v @",
+            @"smart.find": @"REMRemindersListDataView_CustomSmartListInvocation initWithFetchResultTokenToDiffAgainst: @ @; REMStore resultFromPerformingSwiftInvocation:parametersData:storages:error: @ @ @ @ ^@",
+            @"template.create": @"REMTemplateConfiguration initWithSourceListID:shouldSaveCompleted: @ @ B; REMSaveRequest addTemplateWithName:configuration:toAccountChangeItem: @ @ @ @",
+            @"template.use": @"REMSaveRequest addListUsingTemplate:toAccountChangeItem: @ @ @",
+            @"template.delete": @"REMTemplateChangeItem removeFromParentAccount v",
+            @"appearance": @"+REMColor colorWithHexString: @ @; REMColor initWithCKSymbolicColorName:hexString: @ @ @; REMListBadge initWithEmblem: @ @; REMListBadge initWithEmoji: @ @"
+        };
         for (NSString *feature in features) {
-            if ([feature isEqual:@"reminder.create"]) {
-                Instance(@"REMSaveRequest", @"addReminderWithTitle:toListChangeItem:", @"@", @[@"@", @"@"]);
-            } else if ([feature isEqual:@"reminder.update"]) {
-                Instance(@"REMSaveRequest", @"updateReminder:", @"@", @[@"@"]);
-            } else if ([feature isEqual:@"reminder.delete"]) {
-                Instance(@"REMReminderChangeItem", @"removeFromList", @"v", @[]);
-            } else if ([feature isEqual:@"reminder.restore"]) {
-                Instance(@"REMListChangeItem", @"undeleteRemindersWithoutUndoWithIDs:", @"v", @[@"@"]);
-                Instance(@"REMStore", @"fetchReminderIncludingMarkedForDeleteWithObjectID:error:", @"@", @[@"@", @"^@"]);
-                Instance(@"REMReminderStorage", @"setListID:", @"v", @[@"@"]);
-                Instance(@"REMReminderSubtaskContextChangeItem", @"addReminderChangeItem:", @"v", @[@"@"]);
-            } else if ([feature isEqual:@"title"]) {
-                Instance(@"REMReminderChangeItem", @"setTitleAsString:", @"v", @[@"@"]);
-            } else if ([feature isEqual:@"notes"]) {
-                Instance(@"REMReminderChangeItem", @"setNotesAsString:", @"v", @[@"@"]);
-            } else if ([feature isEqual:@"due"]) {
-                Instance(@"REMReminderChangeItem", @"setDueDateComponentsWithAlarmsIfNeeded:", @"v", @[@"@"]);
-                Instance(@"REMReminderChangeItem", @"setDueDateComponents:", @"v", @[@"@"]);
-                Instance(@"REMReminderChangeItem", @"removeAlarm:", @"v", @[@"@"]);
-            } else if ([feature isEqual:@"start"]) {
-                Instance(@"REMReminderStorage", @"setStartDateComponents:", @"v", @[@"@"]);
-            } else if ([feature isEqual:@"priority"]) {
-                Instance(@"REMReminderStorage", @"setPriority:", @"v", @[@"Q"]);
-            } else if ([feature isEqual:@"flagged"]) {
-                Instance(@"REMReminderStorage", @"setFlagged:", @"v", @[@"q"]);
-            } else if ([feature isEqual:@"urgent"]) {
-                Instance(@"REMReminderUrgentAlarmContextChangeItem", @"setIsUrgentStateEnabledForCurrentUser:", @"v", @[@"B"]);
-            } else if ([feature isEqual:@"completed"]) {
-                Instance(@"REMReminderChangeItem", @"setCompleted:", @"v", @[@"B"]);
-                Instance(@"REMSaveRequest", @"setCloneCompletedRecurrentRemindersAtSave:", @"v", @[@"B"]);
-            } else if ([feature isEqual:@"repeat"]) {
-                Instance(@"REMReminderChangeItem", @"removeAllRecurrenceRules", @"v", @[]);
-                Instance(@"REMReminderChangeItem", @"addRecurrenceRuleWithFrequency:interval:daysOfTheWeek:daysOfTheMonth:monthsOfTheYear:weeksOfTheYear:daysOfTheYear:setPositions:end:", @"@", @[@"q", @"q", @"@", @"@", @"@", @"@", @"@", @"@", @"@"]);
-                Factory(@"REMRecurrenceDayOfWeek", @"dayOfWeek:weekNumber:", @[@"q", @"q"]);
-                Factory(@"REMRecurrenceEnd", @"recurrenceEndWithEndDate:", @[@"@"]);
-                Factory(@"REMRecurrenceEnd", @"recurrenceEndWithOccurrenceCount:", @[@"Q"]);
-            } else if ([feature isEqual:@"early"]) {
-                Instance(@"REMDueDateDeltaInterval", @"initWithUnit:count:", @"@", @[@"q", @"q"]);
-                Instance(@"REMReminderDueDateDeltaAlertContextChangeItem", @"addDueDateDeltaAlertWithDueDateDelta:", @"@", @[@"@"]);
-                Instance(@"REMReminderDueDateDeltaAlertContextChangeItem", @"removeAllFetchedDueDateDeltaAlerts", @"v", @[]);
-            } else if ([feature isEqual:@"tags"]) {
-                Instance(@"REMReminderHashtagContextChangeItem", @"addHashtagWithType:name:", @"@", @[@"q", @"@"]);
-                Instance(@"REMReminderHashtagContextChangeItem", @"removeAllHashtags", @"v", @[]);
-                Instance(@"REMReminderHashtagContextChangeItem", @"removeHashtag:", @"v", @[@"@"]);
-            } else if ([feature isEqual:@"location"]) {
-                Instance(@"REMAlarmLocationTrigger", @"initWithStructuredLocation:proximity:", @"@", @[@"@", @"q"]);
-                Instance(@"REMAlarmVehicleTrigger", @"initWithEvent:", @"@", @[@"q"]);
-                Instance(@"REMStructuredLocation", @"initWithTitle:", @"@", @[@"@"]);
-                for (NSString *selector in @[@"setLatitude:", @"setLongitude:", @"setRadius:"]) Instance(@"REMStructuredLocation", selector, @"v", @[@"d"]);
-                Instance(@"REMReminderChangeItem", @"addAlarmWithTrigger:", @"@", @[@"@"]);
-            } else if ([feature isEqual:@"contact"]) {
-                Instance(@"REMContactRepresentation", @"initWithPhones:emails:", @"@", @[@"@", @"@"]);
-                Instance(@"REMReminderStorage", @"setContactHandles:", @"v", @[@"@"]);
-            } else if ([feature isEqual:@"url"]) {
-                Instance(@"REMReminderAttachmentContextChangeItem", @"setURLAttachmentWithURL:", @"@", @[@"@"]);
-                Instance(@"REMReminderAttachmentContextChangeItem", @"removeURLAttachments", @"v", @[]);
-            } else if ([feature isEqual:@"addImages"]) {
-                Instance(@"REMReminderAttachmentContextChangeItem", @"addImageAttachmentWithURL:width:height:error:", @"@", @[@"@", @"Q", @"Q", @"^@"]);
-            } else if ([feature isEqual:@"removeImages"]) {
-                Instance(@"REMReminderAttachmentContextChangeItem", @"removeAttachment:", @"v", @[@"@"]);
-            } else if ([feature isEqual:@"assigneeID"]) {
-                Instance(@"REMReminderAssignmentContextChangeItem", @"addAssignmentWithAssignee:originator:status:", @"@", @[@"@", @"@", @"q"]);
-                Instance(@"REMReminderAssignmentContextChangeItem", @"removeAllAssignments", @"v", @[]);
-            } else if ([feature isEqual:@"listID"] || [feature isEqual:@"parentID"]) {
-                Instance(@"REMListChangeItem", @"addReminderChangeItem:", @"v", @[@"@"]);
-                Instance(@"REMReminderSubtaskContextChangeItem", @"addReminderChangeItem:", @"v", @[@"@"]);
-            } else if ([feature isEqual:@"position"]) {
-                for (NSString *cls in @[@"REMListChangeItem", @"REMReminderSubtaskContextChangeItem"]) {
-                    Instance(cls, @"insertReminderChangeItem:afterReminderChangeItem:", @"v", @[@"@", @"@"]);
-                    Instance(cls, @"insertReminderChangeItem:beforeReminderChangeItem:", @"v", @[@"@", @"@"]);
-                }
-            } else if ([feature isEqual:@"sectionID"]) {
-                Instance(@"REMMembership", @"initWithMemberIdentifier:groupIdentifier:isObsolete:modifiedOn:", @"@", @[@"@", @"@", @"B", @"@"]);
-                Instance(@"REMMemberships", @"initWithMembershipByMemberIdentifier:", @"@", @[@"@"]);
-                Instance(@"REMListSectionContextChangeItem", @"setUnsavedMembershipsOfRemindersInSections:", @"v", @[@"@"]);
-            } else if ([feature isEqual:@"list.create"]) {
-                Instance(@"REMSaveRequest", @"addListWithName:toAccountChangeItem:listObjectID:", @"@", @[@"@", @"@", @"@"]);
-            } else if ([feature isEqual:@"list.update"]) {
-                Instance(@"REMSaveRequest", @"updateList:", @"@", @[@"@"]);
-                Instance(@"REMListStorage", @"setName:", @"v", @[@"@"]);
-                Instance(@"REMListStorage", @"setSortingStyle:", @"v", @[@"@"]);
-                Instance(@"REMListChangeItem", @"setIsPinned:", @"v", @[@"B"]);
-                Instance(@"REMListGroceryContextChangeItem", @"setShouldCategorizeGroceryItems:", @"v", @[@"B"]);
-                Instance(@"REMListGroceryContextChangeItem", @"setGroceryLocaleID:", @"v", @[@"@"]);
-            } else if ([feature isEqual:@"list.delete"] || [feature isEqual:@"group.delete"]) {
-                Instance(@"REMListChangeItem", @"removeFromParent", @"v", @[]);
-            } else if ([feature isEqual:@"group.create"]) {
-                Instance(@"REMSaveRequest", @"addGroupWithName:toAccountGroupContextChangeItem:", @"@", @[@"@", @"@"]);
-            } else if ([feature isEqual:@"group.rename"]) {
-                Instance(@"REMListStorage", @"setName:", @"v", @[@"@"]);
-            } else if ([feature isEqual:@"section.create"]) {
-                Instance(@"REMSaveRequest", @"addListSectionWithDisplayName:toListSectionContextChangeItem:", @"@", @[@"@", @"@"]);
-            } else if ([feature isEqual:@"section.rename"]) {
-                Instance(@"REMListSectionStorage", @"setDisplayName:", @"v", @[@"@"]);
-            } else if ([feature isEqual:@"section.move"]) {
-                Instance(@"REMListSectionContextChangeItem", @"setUnsavedSectionIDsOrdering:", @"v", @[@"@"]);
-                Instance(@"REMListSectionContextChangeItem", @"setShouldUpdateSectionsOrdering:", @"v", @[@"B"]);
-            } else if ([feature isEqual:@"section.delete"]) {
-                Instance(@"REMListSectionChangeItem", @"removeFromList", @"v", @[]);
-            } else if ([feature isEqual:@"smart.create"]) {
-                Instance(@"REMSaveRequest", @"addCustomSmartListWithName:toAccountChangeItem:smartListObjectID:", @"@", @[@"@", @"@", @"@"]);
-            } else if ([feature isEqual:@"smart.update"]) {
-                Instance(@"REMSmartListStorage", @"setFilterData:", @"v", @[@"@"]);
-                Instance(@"REMSmartListCustomContextChangeItem", @"setName:", @"v", @[@"@"]);
-                Instance(@"REMSmartListStorage", @"setMinimumSupportedVersion:", @"v", @[@"q"]);
-                Instance(@"REMSmartListStorage", @"setEffectiveMinimumSupportedVersion:", @"v", @[@"q"]);
-            } else if ([feature isEqual:@"smart.delete"]) {
-                Instance(@"REMSmartListChangeItem", @"removeFromParentWithAccountChangeItem:", @"v", @[@"@"]);
-            } else if ([feature isEqual:@"smart.find"]) {
-                if (![[NSBundle bundleWithPath:@"/System/Library/PrivateFrameworks/ReminderKitInternal.framework"] load]) Unsupported(@"Native smart-list evaluator unavailable");
-                Instance(@"REMRemindersListDataView_CustomSmartListInvocation", @"initWithFetchResultTokenToDiffAgainst:", @"@", @[@"@"]);
-                Instance(@"REMStore", @"resultFromPerformingSwiftInvocation:parametersData:storages:error:", @"@", @[@"@", @"@", @"@", @"^@"]);
-            } else if ([feature isEqual:@"template.create"]) {
-                Instance(@"REMTemplateConfiguration", @"initWithSourceListID:shouldSaveCompleted:", @"@", @[@"@", @"B"]);
-                Instance(@"REMSaveRequest", @"addTemplateWithName:configuration:toAccountChangeItem:", @"@", @[@"@", @"@", @"@"]);
-            } else if ([feature isEqual:@"template.use"]) {
-                Instance(@"REMSaveRequest", @"addListUsingTemplate:toAccountChangeItem:", @"@", @[@"@", @"@"]);
-            } else if ([feature isEqual:@"template.delete"]) {
-                Instance(@"REMTemplateChangeItem", @"removeFromParentAccount", @"v", @[]);
-            } else if ([feature isEqual:@"appearance"]) {
-                Factory(@"REMColor", @"colorWithHexString:", @[@"@"]);
-                Instance(@"REMColor", @"initWithCKSymbolicColorName:hexString:", @"@", @[@"@", @"@"]);
-                Instance(@"REMListBadge", @"initWithEmblem:", @"@", @[@"@"]);
-                Instance(@"REMListBadge", @"initWithEmoji:", @"@", @[@"@"]);
-            } else { Unsupported([@"Unknown native capability token: " stringByAppendingString:feature]); }
+            NSString *key = @{@"parentID": @"listID", @"group.delete": @"list.delete"}[feature] ?: feature;
+            NSString *signatures = table[key];
+            if (!signatures) Unsupported([@"Unknown native capability token: " stringByAppendingString:feature]);
+            if ([key isEqual:@"smart.find"] && ![[NSBundle bundleWithPath:@"/System/Library/PrivateFrameworks/ReminderKitInternal.framework"] load])
+                Unsupported(@"Native smart-list evaluator unavailable");
+            CheckSignatures(signatures);
         }
         return @YES;
     }, error) != nil;

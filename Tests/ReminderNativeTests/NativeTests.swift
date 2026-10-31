@@ -56,6 +56,22 @@ struct ReminderNativeTests {
         patch.position = .clear
         failure(.unsupported) { _ = try Translation.patch(patch) }
     }
+    @Test func creationLiftsAllPresentFieldsThroughTheRealSparseTranslator() throws {
+        let due = ReminderDate.localDateTime(CalendarDate(2030, 2, 3), hour: 9, minute: 30, second: 0)
+        let fields = ReminderFields(title: "T", listID: listID, notes: "", due: due, start: .date(CalendarDate(2030, 2, 2)),
+            recurrence: Recurrence(frequency: .weekly), earlyAlerts: [EarlyAlert(before: 1, unit: .hours)], location: .gettingInCar,
+            contact: ContactAlert(phones: ["123"]), url: "https://example.invalid", priority: .high, flagged: false, urgent: true,
+            completed: false, tags: ["tag"], parentID: id, sectionID: "section", position: .before("neighbor"), assigneeID: "member")
+        let actual = try Translation.creationFields(fields)
+        #expect(Set(actual.keys) == Set(["title", "listID", "notes", "due", "start", "repeat", "early", "location", "contact", "url", "priority", "flagged", "urgent", "completed", "tags", "parentID", "sectionID", "position", "assigneeID"]))
+        #expect(actual["notes"] as? String == ""); #expect(actual["flagged"] as? Bool == false)
+        #expect(actual["due"] as? DateComponents == Translation.components(due))
+        #expect(actual["early"] as? [[Int]] == [[1, -1]])
+        #expect(actual["priority"] as? Int == 1); #expect(actual["assigneeID"] as? String == "member")
+        let defaults = try Translation.creationFields(ReminderFields(title: "T", listID: listID))
+        #expect(defaults["due"] == nil); #expect(defaults["notes"] == nil); #expect(defaults["position"] == nil)
+        #expect(defaults["tags"] as? [String] == [])
+    }
     @Test func earlyAlertsHaveNativeNegativeDeltas() throws {
         var patch = ReminderPatch(); patch.earlyAlerts = .set([EarlyAlert(before: 15, unit: .minutes), EarlyAlert(before: 2, unit: .weeks)])
         #expect(try Translation.patch(patch)["early"] as? [[Int]] == [[0, -15], [3, -2]])
@@ -81,13 +97,12 @@ struct ReminderNativeTests {
         #expect(try Translation.location(["vehicle": 2]) == .gettingOutOfCar)
         failure(.unsupported) { _ = try Translation.location(["vehicle": 0]) }
     }
-    @Test func imageMetadataHashesBytesNotTimestamps() throws {
+    @Test func imageMetadataDoesNotRequireBytes() throws {
         var raw = fixture()
-        raw["images"] = [["id": id, "fileName": "x.png", "type": "public.png", "data": Data([1, 2, 3])]]
+        raw["images"] = [["id": id, "fileName": "x.png", "type": "public.png", "size": 3]]
         let first = try Translation.reminder(raw)
         #expect(first.images[0].byteCount == 3)
-        #expect(first.images[0].contentHash == "039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81")
-        raw["images"] = [["id": id, "fileName": "x.png", "type": "public.png", "data": Data([1, 2, 4])]]
+        raw["images"] = [["id": id, "fileName": "x.png", "type": "public.png", "size": 4]]
         #expect(try first.version() != Translation.reminder(raw).version())
     }
     @Test func supportedSmartFiltersRoundTripThroughNativeSchema() throws {
@@ -185,16 +200,18 @@ struct ReminderNativeTests {
         failure(.invalidInput) { _ = try ImageStaging.validate(ImageInput(fileName: "x", contentType: "public.png", bytes: Data([0, 1, 2]))) }
         failure(.invalidInput) { _ = try ImageStaging.validate(ImageInput(fileName: "x", contentType: "public.jpeg", bytes: bytes as Data)) }
     }
-    @Test func imageLeaseRequiresNewIndependentReceiptsEvenForDuplicateBytes() throws {
+    @Test func imageLeaseRequiresNewIndependentMetadataReceiptsEvenForDuplicateBytes() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("lease-\(UUID())")
-        let bytes = Data([1, 2, 3]), input = ImageInput(fileName: "x.png", contentType: "public.png", bytes: Data([1, 2, 3]))
-        let old: [String: Any] = ["id": "old", "sourceURL": URL(fileURLWithPath: "/tmp/persisted-old.png"), "data": bytes]
-        let alias: [String: Any] = ["id": "new", "sourceURL": directory.appendingPathComponent("0.image"), "data": bytes]
+        let input = ImageInput(fileName: "x.png", contentType: "public.png", bytes: Data([1, 2, 3]))
+        let old: [String: Any] = ["id": "old", "sourceURL": URL(fileURLWithPath: "/tmp/persisted-old.png")]
+        let alias: [String: Any] = ["id": "new", "sourceURL": directory.appendingPathComponent("0.image")]
         failure(.backend) { try ImageStaging.verifyConsumed([input], nativeImages: [old, alias], existingIDs: ["old"], directory: directory) }
         failure(.backend) { try ImageStaging.verifyConsumed([input], nativeImages: [old], existingIDs: ["old"], directory: directory) }
-        let independent: [String: Any] = ["id": "new", "sourceURL": URL(fileURLWithPath: "/tmp/persisted-new.png"), "data": bytes]
+        let independent: [String: Any] = ["id": "new", "sourceURL": URL(fileURLWithPath: "/tmp/persisted-new.png")]
         try ImageStaging.verifyConsumed([input], nativeImages: [old, independent], existingIDs: ["old"], directory: directory)
         failure(.backend) { try ImageStaging.verifyConsumed([input, input], nativeImages: [independent], existingIDs: [], directory: directory) }
+        let second: [String: Any] = ["id": "second", "sourceURL": URL(fileURLWithPath: "/tmp/persisted-second.png")]
+        try ImageStaging.verifyConsumed([input, input], nativeImages: [independent, second], existingIDs: [], directory: directory)
     }
     @Test func fullCoreColorPaletteIsMappedBeforeNativeCalls() throws {
         for name in ["red", "orange", "yellow", "green", "blue", "purple", "brown", "light-blue", "indigo", "pink", "gray", "rose"] {

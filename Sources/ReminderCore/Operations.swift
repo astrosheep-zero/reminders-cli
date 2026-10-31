@@ -259,7 +259,8 @@ public final class Operations: @unchecked Sendable {
         try validateParent(id: id, parentID: entry?.parentID, listID: listID,
                            hasChildren: expected.contains { !same($0, id) })
         try backend.checkSupport(for: .restore(id: id, list: listID))
-        let result = try mutate { try backend.restoreReminder(id: id, listID: listID, knownChildIDs: expected.filter { !same($0, id) }) }
+        let result = try mutate { try backend.restoreReminder(id: id, listID: listID,
+            knownChildIDs: expected.filter { !same($0, id) }, parentID: entry?.parentID) }
         guard case .mutation(var mutation) = result else { return result }
         let ids = Array(Set([id] + expected + mutation.affectedIDs)).sorted()
         mutation.affectedIDs = ids; evidence = mutation

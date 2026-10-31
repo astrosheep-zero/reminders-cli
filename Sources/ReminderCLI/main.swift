@@ -3,6 +3,8 @@ import Darwin
 import ReminderCore
 import ReminderRuntime
 import ReminderNative
+import ReminderFacade
+import ReminderMCP
 
 func worker() -> Int32 {
     do {
@@ -39,4 +41,10 @@ func worker() -> Int32 {
 }
 
 let arguments = Array(CommandLine.arguments.dropFirst())
+if arguments == ["mcp"] {
+    let service = MCPFrontend()
+    let interrupts = FrontendInterrupts { Task { await service.stop() } }
+    do { try await service.run(); withExtendedLifetime(interrupts) {}; exit(0) }
+    catch { writeError("MCP stopped: \(error)\n"); await service.stop(); exit(6) }
+}
 exit(arguments == ["--worker"] ? worker() : frontend(arguments))

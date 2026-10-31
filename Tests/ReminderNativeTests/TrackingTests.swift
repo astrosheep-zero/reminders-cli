@@ -72,6 +72,16 @@ struct NativeTrackingTests {
         #expect(error == nil)
     }
 
+    @Test func everyClosedCapabilityPassesInstalledMetadataABIWithoutOpeningStore() {
+        let features = "reminder.create reminder.update reminder.delete reminder.restore title notes due start priority flagged urgent completed repeat early tags location contact url addImages removeImages assigneeID listID parentID position sectionID list.create list.update list.delete group.create group.rename group.delete section.create section.rename section.move section.delete smart.create smart.update smart.delete smart.find template.create template.use template.delete appearance".split(separator: " ").map(String.init)
+        for feature in features {
+            var error: NSError?
+            #expect(RNPreflight([feature], &error), "\(feature): \(String(describing: error))")
+        }
+        var error: NSError?
+        #expect(!RNPreflight(["caller-supplied-selector"], &error)); #expect(error?.code == 1)
+    }
+
     @Test func emptyAndMultipleContainersProduceSortedDeduplicatedOwnedIDs() throws {
         let bridge = RNBridge(), request = TrackingRequest()
         #expect(commit(request, bridge: bridge) == nil)

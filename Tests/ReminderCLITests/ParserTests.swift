@@ -11,7 +11,7 @@ struct ParserTests {
         return command
     }
     @Test func creationWithComplexTypedFields() throws {
-        let args = ["add", "Trip", "--list", "Inbox", "--fields-json", #"{"due":{"date":{"_0":{"year":2030,"month":2,"day":3}}},"start":{"localDateTime":{"_0":{"year":2030,"month":2,"day":2},"hour":9,"minute":30,"second":0}},"recurrence":{"frequency":"monthly","interval":2,"weekdays":[{"day":2,"ordinal":1}],"monthDays":[],"months":[],"end":{"count":{"_0":4}}},"earlyAlerts":[{"before":1,"unit":"days"}],"location":{"place":{"title":"Station","latitude":31.2,"longitude":121.5,"radius":100,"when":"arriving"}},"contact":{"phones":["+123456"],"emails":[]},"priority":"high","tags":["travel"],"parentID":"parent","sectionID":"section","position":{"after":{"_0":"neighbor"}},"assigneeID":"me","url":"https://example.com","flagged":true}"#]
+        let args = ["add", "Trip", "--list", "Inbox", "--fields-json", #"{"due":{"kind":"date","value":{"year":2030,"month":2,"day":3}},"start":{"kind":"localDateTime","value":{"year":2030,"month":2,"day":2},"hour":9,"minute":30,"second":0},"recurrence":{"frequency":"monthly","interval":2,"weekdays":[{"day":2,"ordinal":1}],"monthDays":[],"months":[],"end":{"kind":"count","value":4}},"earlyAlerts":[{"before":1,"unit":"days"}],"location":{"kind":"place","title":"Station","latitude":31.2,"longitude":121.5,"radius":100,"when":"arriving"},"contact":{"phones":["+123456"],"emails":[]},"priority":"high","tags":["travel"],"parentID":"parent","sectionID":"section","position":{"kind":"after","value":"neighbor"},"assigneeID":"me","url":"https://example.com","flagged":true}"#]
         guard case .create(let draft) = try command(args) else { throw CLIParser.invalid("Expected create") }
         #expect(draft.fields.title == "Trip")
         #expect(draft.fields.due == .date(CalendarDate(2030, 2, 3)))
@@ -32,10 +32,10 @@ struct ParserTests {
         #expect(patch.title == .absent)
     }
     @Test func queryAndSmartFilters() throws {
-        guard case .find(let query) = try command(["find", "--query-json", #"{"includeCompleted":true,"flagged":false,"repeating":true,"hasLocation":true,"tags":["x"],"dueBefore":{"date":{"_0":{"year":2030,"month":1,"day":1}}}}"#, "--limit", "12"]) else { throw CLIParser.invalid("Expected find") }
+        guard case .find(let query) = try command(["find", "--query-json", #"{"includeCompleted":true,"flagged":false,"repeating":true,"hasLocation":true,"tags":["x"],"dueBefore":{"kind":"date","value":{"year":2030,"month":1,"day":1}}}"#, "--limit", "12"]) else { throw CLIParser.invalid("Expected find") }
         #expect(query.limit == 12); #expect(query.flagged == false); #expect(query.includeCompleted)
         let filters: [SmartFilter] = [.tags(["work"], match: .all), .date(.overdue), .time(fromHour: 8, fromMinute: 0, toHour: 17, toMinute: 30), .priorities([.high]), .flagged(true), .lists(["L"]), .location(.arriving)]
-        let text = String(decoding: try JSONEncoder().encode(filters), as: UTF8.self)
+        let text = #"[{"kind":"tags","value":["work"],"match":"all"},{"kind":"date","value":{"kind":"overdue"}},{"kind":"time","fromHour":8,"fromMinute":0,"toHour":17,"toMinute":30},{"kind":"priorities","value":["high"]},{"kind":"flagged","value":true},{"kind":"lists","value":["L"]},{"kind":"location","value":"arriving"}]"#
         guard case .smartList(.create(let smart)) = try command(["smart-lists", "add", "Today", "--definition-json", "{\"filters\":\(text)}"]) else { throw CLIParser.invalid("Expected smart list") }
         #expect(smart.filters == filters); #expect(smart.name == "Today")
     }
@@ -47,7 +47,7 @@ struct ParserTests {
             ["groups"], ["groups", "add", "Work"], ["groups", "rename", "G", "--name", "New"], ["groups", "delete", "G", "--yes"],
             ["sections", "--list", "L"], ["sections", "add", "A", "--list", "L"],
             ["sections", "rename", "S", "--list", "L", "--name", "B"],
-            ["sections", "move", "S", "--list", "L", "--position-json", #"{"before":{"_0":"other"}}"#],
+            ["sections", "move", "S", "--list", "L", "--position-json", #"{"kind":"before","value":"other"}"#],
             ["sections", "delete", "S", "--list", "L", "--yes"],
             ["tags"], ["tags", "rename", "old", "--name", "new"], ["tags", "delete", "old", "--yes"],
             ["smart-lists"], ["smart-lists", "add", "A", "--definition-json", "{}"],
@@ -89,8 +89,8 @@ struct ParserTests {
             ["edit", "id", "--version", "v", "--clear", "due,due"],
             ["add", "T", "--list", "L", "--fields-json", #"{"unknown":1}"#],
             ["add", "T", "--list", "L", "--fields-json", #"{"priority":"critical"}"#],
-            ["add", "T", "--list", "L", "--fields-json", #"{"due":{"date":{"_0":{"year":2030,"month":2,"day":31}}}}"#],
-            ["add", "T", "--list", "L", "--fields-json", #"{"due":{"date":{"_0":{"year":2030,"month":2,"day":3,"typo":2}}}}"#],
+            ["add", "T", "--list", "L", "--fields-json", #"{"due":{"kind":"date","value":{"year":2030,"month":2,"day":31}}}"#],
+            ["add", "T", "--list", "L", "--fields-json", #"{"due":{"kind":"date","value":{"year":2030,"month":2,"day":3,"typo":2}}}"#],
             ["show", ""], ["--worker", "--json"]
         ]
         for sample in samples {

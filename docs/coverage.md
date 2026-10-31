@@ -1,82 +1,83 @@
 # Capability and evidence matrix
 
-This is an implementation/evidence ledger, **not a native certification**. All live native behavior, permission attribution under a signed host, real restore/attachment consumption, and remote iCloud delivery remain unverified. No automated test opens the real store, prompts, or mutates real reminders. `doctor` reports static implementation metadata and bundle/signature checks; only if already authorized does it attempt a direct sentinel UUID read. That probe's result is explicit, not a claim of TCC attribution or full feature support.
+This is an implementation/evidence ledger, **not a native certification**. Evidence has two distinct generations:
+
+- **Prior signed CLI build `D6E95B9B-AA35-422E-984C-3DF067D04B5E` (2026-10-31):** 98 offline tests and a broad, explicitly authorized local live matrix covered command families, supported field/filter families, shared assignment, templates/content, ordinary image metadata/add/remove, deletion and restore variants. The independently deleted subtask-parent recovery repair was live rechecked. This is real previous-build evidence, not merely metadata inspection or a fake-backend test.
+- **Current facade/MCP revision, signed build `1B3C0A7C-8009-4199-9CCB-4D36646FF410`:** `swift build`, 110 offline tests, official SDK protocol/stdio integration, schema/dispatch and cancellation/queue regression. Release packaging, plist and strict signature checks passed. A scoped native CLI/MCP run verified 36-tool discovery, signed doctor/read probe, tagged-date creation, cross-frontend edits, independent child delete/restore with parent retention, recurring completed-copy receipts, image add/metadata/remove and exact returned-ID list cleanup. No setup, keychain change or new authorization prompt was invoked. This focused regression does not rerun every earlier native capability.
+
+The SIGPIPE fix was then rebuilt and signed as `E53D440A-FE73-46F2-8147-B76DE6B96DC7`; plist/strict signature, packaged CLI help, MCP initialize, broken-stdout survival and EOF exit passed on that final bundle. Native code was unchanged after the focused live run above.
+
+Explicit image **byte read** still fails with `NSCocoaErrorDomain/257`; ordinary reads/add/remove do not depend on it. The authorization mechanism/root cause is not established. Improving permission-denial remediation is recorded follow-up, not repaired here; no Full Disk Access workaround is asserted. Cross-device iCloud delivery remains unverified, and successful local data access is not independent proof of macOS TCC attribution or a newly displayed permission prompt.
 
 ## Surface coverage
 
-| Feature family | CLI/Core surface | Native implementation / explicit limits | Evidence |
-|---|---|---|---|
-| Find, exact show, UUID lookup | `find`, `show`; typed text/list/smart-list/section/date/status/tags/member predicates | Direct reminder UUID lookup; ordinary queries enumerate selected lists then filter; custom smart lists evaluated through native machinery, not approximated as ordinary filters | Parser + real Core fixture path; native source/build tests, live unverified |
-| Create/edit/complete/uncomplete | `add/edit/done --undo`; mandatory edit/done version | Sparse native patch; completion can produce recurring copies, returned as affected IDs | Fixture CRUD and stale-version/no-save assertions; live unverified |
-| Titles, notes, URL, flags, priority, urgent | `fields-json` / `set-json` / clear | Multiple native URL attachments cannot be represented losslessly; refuse rather than discard | Typed parser/translation coverage; live unverified |
-| Dates/start/early alerts | Civil date versus local date-time tags; early-alert arrays | No conversion to accidental midnight; urgent requires timed due | Core validation and Native translation fixtures; live unverified |
-| Repeat rules | Frequency/interval/weekdays and signed ordinals/month days/months/count-or-until | Multiple recurrence rules and unsupported week/year/set-position components refuse rather than lose state | Complex parser + Core validation + Native translation; live unverified |
-| Location/car/contact alerts | Explicit place coordinates/radius/address/arrival or departure, car cases, phone/email arrays | No Contacts/Location lookups or permissions; unrepresentable native alert state refuses | Parser + Native fixtures; live unverified |
-| Images | Frontend `--image/--image-type`, byte payload; `--remove-images`; `image` reads bytes | Worker-owned private staging; native readback/hash must confirm consumption before cleanup; uncertainty retains evidence | Frontend byte-not-path fixture; Native staging/translation fixtures; real attachment lifecycle unverified |
-| Move/order/subtasks | listID, sectionID, position, parentID typed fields | No clone-delete move; one level only; self/cross-list parent/invalid neighbor refused; reminder clear-manual-position unsupported. List position is a write-only ordering directive: nil means no ordering request, not erase ordering | Core relationship tests; Native source/build, live unverified |
-| Shared assignment | assigneeID/member exact reference or `me`; joined members in list output | Already-joined members only; **no invitations** | Core resolution and Native translation; live unverified |
-| Lists | Metadata-only enumerate/create/full-replacement edit/delete/clear-completed; color/icon/group/pin/kind/sort/order | Default-list marker is readable; no command changes system default. Sort directions not representable by Core (e.g. descending variants) refuse rather than normalize. Native capabilities/account constraints may refuse | Full parser family + Core container tests; Native source/build, live unverified |
-| Groups | Enumerate/add/rename/delete; explicit `--yes` | Nonempty group deletion refuses | Parser/Core tests; native live unverified |
-| Sections | Enumerate optionally by list; add/rename/move/delete | Scoped native section IDs; destructive operation requires --yes | Parser/Core tests; native live unverified |
-| Tags | Counts/enumerate/rename/delete; only explicit tags listing/tag actions request catalog tag materialization | Metadata-only catalogs intentionally omit tags, not fabricated global-empty evidence. Native mutation receipts report affected reminders/count; concurrent mismatch is unknown | Parser/Core/Native fixtures; live unverified |
-| Smart lists | Enumerate/add/full-replacement edit/delete and native content query | Writable: tags/priorities/flagged/lists/any-date/civil date ranges/one-direction relative date/no-location/car. Arbitrary time-of-day ranges, coordinate-free place filters, overdue-only filters, no-priority filter, bidirectional/minute relative ranges, duplicate native filter families unsupported. Opaque unknown fields preserved on read; lists containing them are read-only, not overwritten by a replacement | All modeled filter kinds parse; Native rejects unproven shapes explicitly; live unverified |
-| Templates | Enumerate/create from list/include-completed/use as new list/delete | Only existing native account capability; no synthetic clone implementation | Parser and Native source/build; live unverified |
-| Soft delete/recovery | Versioned delete, `deleted`, restore with saved/explicit destination | Journal scope **toolOnly**, not system Recently Deleted. Parent delete/restore includes known children. No permanent purge | Real Core fixture CRUD/delete/restore with isolated on-disk journal; live unverified |
-| Permission/setup/doctor | setup alone requests; doctor checks bundle/signature/status and probes sentinel UUID only when already authorized | Full Reminders only; lazy store; no account scan for sentinel read; setup skips data probe; TCC attribution explicitly unverified | Pure inspection/probe-gating fixtures, no live store; OS prompt/attribution unverified |
-| Isolation/protocol/errors | Same executable one-shot `--worker`; buildID; bounded bytes/deadlines; stable JSON/error exits | Required disclaimed spawn; no direct-native fallback. Marker-aware malformed result → unknown; no auto retry | Runtime subprocess fixtures + CLI envelope/composition fixtures; signed real native worker behavior unverified |
-| Packaging | Release Reminder.app, plist, minimal entitlement, hardened/ad-hoc signature, exec wrapper | No install, cert/keychain/TCC edits or GUI launch. Existing identity optional; ad-hoc TCC unstable | Final build/plutil/codesign checks required at delivery; not proof of native startup compatibility |
-| Cross-device iCloud | No misleading delivery guarantee | Local save only; human observation required | **Unverified** |
+Every data family below is available through peer CLI/MCP frontends using the same facade schema/dispatch; setup is CLI-only. “Prior live” refers only to the signed build above, not this revision.
 
-A missing private selector/account capability is an explicit `unsupported` error, never empty fabricated success. If established during preflight/read it exits 4; if discovered only after the mutation boundary, Core conservatively returns outcomeUnknown (exit 5), preserving the underlying code. Code implemented against private API evidence is not equivalent to empirical live support. Native's own API evidence document records exact selectors/ABI and platform caveats.
+| Feature family | Surface and safeguards | Evidence / limits |
+|---|---|---|
+| Find/show/UUID lookup | Typed text/list/smart-list/section/date/status/tags/member predicates; direct by-ID lookup; exact names and ambiguous-name refusal | Prior live; current parser/Core/facade/protocol fixtures. Smart lists use native evaluation, not ordinary-query approximation. |
+| Create/edit/complete/uncomplete | Sparse set/clear/absent, mandatory version for edit/done/delete; recurring completion requires request-owned completed-copy evidence | Prior live; current stale-version, callback ordering, sparse-patch and receipt fixtures. Version is optimistic, not atomic cross-device CAS. |
+| Title/notes/URL/flags/priority/urgent | All typed editable fields; urgent requires timed due | Prior live; current translation/schema fixtures. Multiple native URLs refuse rather than lose state. |
+| Dates/start/early alerts | Civil date versus local date-time; explicit positive early offsets | Prior live; current civil-date/delta fixtures. No accidental midnight/timezone conversion. |
+| Recurrence | Frequency/interval/weekdays/signed ordinals/month days/months/count-or-until | Prior live supported families; current parser/Core/Native fixtures. Unsupported multiple rules/week-year/set-position components refuse. |
+| Location/car/contact | Explicit coordinates/radius/address/arrival/departure, car and phone/email inputs | Prior live; current fixtures. No Contacts/Location permission or lookup. Unsupported native shapes refuse. |
+| Images | Frontend bytes, worker-owned private staging, distinct new attachment IDs/non-staging URLs before cleanup; metadata-only ordinary reads | Prior live add/remove/metadata and parent-image restore; explicit byte read **failed 257**. Current image fixture/lease/creation-translation coverage; no new live repair claim. |
+| Move/order/subtasks | One level, same-list parent/section/neighbor checks; no clone-delete move; no parent move with children | Prior live including independent child restore; current strict relationship/receipt/journal tests. Reminder position clear remains unsupported; list position omission is no ordering request. |
+| Shared assignment | Already-joined member ID/name or `me`; member enumeration | Prior live assignment; current resolution/translation fixtures. No invitations/account selection. |
+| Lists | Metadata enumeration/default marker, create/full replacement edit/delete/clear-completed; appearance/group/pin/kind/sort/order | Prior live; current full family dispatch/Core fixtures. No system-default setter; unsupported native sort/account shapes refuse. |
+| Groups | Enumerate/add/rename/delete, confirmed destructive operations | Prior live; current dispatch/Core tests. Nonempty group deletion refuses. |
+| Sections | Optional list-scoped listing, add/rename/move/delete | Prior live; current typed schema/dispatch/Native fixtures. Neighbor must be in the same list. |
+| Tags | Counts/enumeration/rename/remove with request-owned affected reminders | Prior live; current catalog/receipt fixtures. Only explicit tag/full-catalog/tag-action paths materialize counts. |
+| Smart lists | Native CRUD/content evaluation; opaque unknown filters preserved on read | Prior live supported filters and explicit unsupported refusals; current schema/Native fixtures. Arbitrary time, overdue-only, coordinate-free place, bidirectional/minute relative ranges, duplicate native filter families/no-priority remain unsupported. Lists with unknown filters are read-only. |
+| Templates | Native list/create/include-completed/use/delete, no synthetic cloning | Prior live including instantiated content; current typed dispatch/Native fixtures. Account capabilities may refuse. |
+| Soft delete/recovery | Journal intent persisted before save; known root/children and saved parent evidence; strict restore readback/compaction | Prior live root/child/parent/image variants; current isolated-journal fixtures. Scope is `toolOnly`, never all-system Recently Deleted; no purge. |
+| Permissions/doctor | Only explicit CLI setup requests access; doctor optionally probes sentinel UUID when already authorized | Prior signed data access and diagnostic evidence; current pure probe gating/denial fixtures. No new prompt or independent TCC-attribution claim. MCP has no setup tool. |
+| Isolation/errors/cancellation | Same-executable one-shot worker, disclaimed spawn, buildID, bounded bytes/deadline, marker-aware unknown, terminate/reap, no retry | Prior signed native worker evidence; current real subprocess fixtures plus official SDK cancellation and actual stdio initialize/list/invalid-call/EOF. Queued cancellation cannot spawn later. |
+| Packaging | Reminder.app, exec wrapper, explicit signing identity/ad-hoc warning | Current Release build, plist and strict signature verification passed; Homebrew installation verification is recorded separately. |
+| iCloud | Local save acceptance only | **Cross-device delivery unverified.** |
 
-## Offline tests and safety
+A missing selector/account capability is explicit `unsupported`, never fabricated empty success. Pre-save refusal is definite; anything uncertain after the mutation boundary remains outcomeUnknown with underlying code, affected IDs and journal evidence retained. Metadata class presence cannot establish account-specific behavior.
 
-- Genuine Swift Testing tests, loaded by `bash scripts/test.sh`; normal CLT `swift test` discovery is incomplete on this host. No test-only compatibility APIs are resurrected.
-- CLI parser tests include typed recurrence/location/contact/early-alert inputs, filters, every container action, confirmations/version requirements, invalid input, and frontend image bytes.
-- CLI composition fixture uses the **actual current** `ReminderBackend`/`Operations` API and serialized worker request/results; checks optimistic conflict, write callback ordering, truthful unknown, stable errors/scope, and CRUD/delete/restore with an isolated temporary journal. The real production frontend is also compiled as a subprocess with an injected protocol worker to verify SIGINT/SIGTERM cancellation, exit classification and worker reaping before/after the mutation marker.
-- Runtime's real subprocess fixtures cover handshake/bounds/timeout/crash/protocol ambiguity without Native or real reminder data.
-- Native fixtures test translation, static preflight, staging and error boundaries, not real store operations.
-- `scripts/live-smoke` is deliberately absent from verification. Without explicit opt-in it refuses before live access; with opt-in it only uses UUIDs returned for its own unique new list/reminder and retains receipts. It stops without cleanup on uncertainty. It has **not** been run live.
-
-## Final integration record
-
-All dependencies were accepted independently before integration. Base main revision: `553b44beb7a2dde65a3c31292e7ec874b423f4d5`, containing accepted Runtime `f4d2b66`, Core `859fd4b`, and accepted Native with its Holder-authorized narrow Core catalog/restore refinement. CLI final commit is recorded in the delivery receipt rather than embedding a self-referential commit hash here.
-
-Actual integrated worktree verification:
+## Current offline verification
 
 | Check | Result |
 |---|---|
-| `bash scripts/test.sh` | **88 passed**: Runtime 13, Native 24, Core 33, CLI 18 |
-| `swift run reminder --help` | Pass, no worker/native access |
-| `bash scripts/build-app.sh` | Release arm64 app and exec wrapper built; local ad-hoc signing only |
-| `plutil -lint dist/Reminder.app/Contents/Info.plist` | Pass |
-| `codesign --verify --strict dist/Reminder.app` | Pass |
-| Signature/entitlement inspection | `adhoc,runtime`; only `com.apple.security.personal-information.calendars`; no TeamIdentifier |
-| Packaged wrapper JSON help | Pass; ordinary executable shell wrapper, not symlink |
-| Packaged invalid edit JSON | `invalidInput`, exit 1, before worker/native access |
-| Resource plist and shell syntax | Pass |
-| Live smoke without opt-in | Refuses before live access |
+| `swift build` | Pass; executable/Swift/C/Objective-C modules compile, no distribution signing script |
+| `bash scripts/test.sh` | **110 passed**: Runtime 13, Native 36, Core 33, CLI/facade/MCP 28 |
+| Official SDK client/server | Initialize 2025-11-25, version 0.1.0, complete tool list, real facade/Core/Runtime calls, structured + text output, wrong/corrupt/contradictory final results |
+| Actual `reminder mcp` stdio executable | Initialize/list/invalid arguments/EOF exit, without Native access |
+| Cancellation | Task/SDK notification propagation; pre/post-marker classification; pending cancellation and shutdown do not spawn; active worker reaped; SDK ping remains responsive |
+| Shared schemas | All 36 tool descriptors have typed dispatch tests; unknown/null/internal-enum/nested fields and missing replacement fields refuse; stable output/version/opaque read preservation |
+| Native deduplication | All closed feature-token ABI metadata checks; creation uses real sparse translator; request-owned tracking/staging/readback fixtures |
+| `git diff --check` | Pass at final review |
 
-The installed CLT emits warnings for nonexistent optional Developer framework/library search directories; all gates above completed successfully. Plain `swift test` is not the amended gate on this host; the documented genuine Testing plugin wrapper is. Packaging/signature verification does **not** verify TCC ownership, permission prompting, a signed native worker's data access, or any account capability.
+The genuine Swift Testing wrapper explicitly loads the installed TestingMacros plugin and disables unavailable XCTest discovery on this CLT installation; it is not a behavior workaround or an old-API shim. Compiler/linker warnings about nonexistent optional CLT framework/library search directories remain environmental. Verification uses installed Swift **6.4.2**. Resolved manifests are compatible with the advertised Swift 6.2 floor (Collections **1.6.0**, not 1.7.5), but an actual Swift 6.2 compiler build was not run.
 
-Physical line counts include comments/blanks and count Swift/C/Objective-C/headers, without minification:
+One pre-existing Runtime fixture assertion was racy: its observable side effect was written after corruption had already allowed Runtime to terminate the worker. The deliberately corrupt fixture now records that side effect before exposing malformed stdout, deterministically testing conservative unknown classification without delaying or weakening production Runtime behavior. The full suite passes after this fixture correction.
 
-| Category | Lines |
+Independent review found that a closed MCP stdout pipe could terminate the process with SIGPIPE before cleanup. MCP startup now ignores SIGPIPE so the SDK receives EPIPE, and EOF can drain the facade. Two real subprocess regressions verify the shipped executable survives the broken output pipe, and an injected active worker is reaped while a queued call never spawns. The failing behavior was reproduced before the fix.
+
+## Size and simplification
+
+Physical source lines include comments/blanks and Swift/C/Objective-C/public headers, excluding tests, dependency checkouts, Package.swift, docs, scripts, resources and ignored build artifacts. The same measure was used for the **4,819-line starting worktree**, including all 16 pre-existing uncommitted files.
+
+| Production area | Lines |
 |---|---:|
-| CLI production Swift | 801 |
-| Core production Swift (including untouched one-line placeholder) | 1,225 |
-| Runtime Swift + C/header | 664 |
-| Native Swift + Objective-C/header | 2,081 |
-| **All production sources** | **4,771** |
-| CLI tests (including untouched one-line placeholder) | 426 |
-| All tests | 1,854 |
-| Build/live-smoke/test scripts | 147 |
-| Plist/entitlement resources | 24 |
+| CLI | 368 |
+| Shared facade | 555 |
+| MCP adapter | 52 |
+| Core | 1,207 |
+| Runtime + C/header | 664 |
+| Native + Objective-C/header | 1,971 |
+| **Total** | **4,817** |
+| **Net change from starting worktree** | **−2** |
 
-The production total is below the ~6,000-line target. `Package.swift`, Markdown documentation and ignored build artifacts are outside that source count. Test totals are reported separately and are not used to disguise production size.
+Tests are separate: **2,493 lines**. There is no minification, source moved into tests, or compatibility shim recreating a removed public API. Simplification removes the duplicated CLI command allowlist/dispatch in favor of registry-attached typed closures; centralizes public enum schema/codec/output mapping; shares native create/update staging/receipt confirmation and guarded entity save edges; replaces repeated ABI-check branches with one closed signature table; generates identical typed Objective-C send fences; shares creation/sparse-field translation and Core civil components; removes manual per-field patch decoding and an unused section bridge/placeholder. Core mutation count stays computed and is emitted once by facade presentation.
 
-### Unfinished versus live-unverified
+## Live provenance and remaining work
 
-- **Unfinished implementation within the promised CLI surface:** none. All typed commands/field families are wired to accepted Core/Native. Explicit unsupported native representational/capability restrictions remain documented above and in [Native's evidence](native-api.md); they are not called implemented live behavior.
-- **Live-unverified:** real permission prompt/TCC attribution, signed worker reads/writes, actual native field/account behavior, attachment consumption, delete/restore, the opt-in smoke script's live path, and cross-device iCloud delivery. No real store read, setup, save, deletion, restore, GUI launch or installation was performed for these gates.
-- The only automatic CRUD/delete/restore evidence is the actual Core engine using isolated deterministic fixtures and temporary journals. Metadata-only catalog omission is intentional and never presented as a verified globally empty tag list.
+Previous authorized live receipts remain local/ignored under `dist/live-smoke-*`, `dist/interface-live-*`, `dist/live-gap-matrix-*`, `dist/restore-variants-*`, `dist/image-recovery-*`, `dist/parent-image-restore-*` and `dist/templates-content-*`. They are evidence for their recorded signed build, not public test fixtures; do not publish private reminder payloads. The prior smoke's live path was run; the current offline gate neither invokes it nor reuses live IDs.
+
+Current signed receipts remain local/ignored in `dist/mcp-release-live-b019078e-6016-4134-a4b1-922e32ca9b54/`. The first scoped test selected the first affected reminder rather than the intended newly created child; it exercised parent-tree restore, then failed its child assertion. The test was corrected to select the exact returned title/list identity, and its owned list was cleaned by recorded ID before the passing run. No unrelated user records were selected.
+
+Explicit image-read permission remediation and second-device iCloud observation remain unresolved. Do not run setup, signing/keychain actions, live mutation, broad cleanup or publication as part of ordinary offline verification.

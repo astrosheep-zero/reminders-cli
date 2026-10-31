@@ -1,8 +1,6 @@
 import Foundation
-import EventKit
 import ReminderKitShim
 import ReminderCore
-import CryptoKit
 
 /// A single worker owns one backend. Public calls are serialized even if a caller
 /// bypasses Operations; no private object or selector escapes ReminderKitShim.
@@ -37,7 +35,7 @@ public final class NativeReminderBackend: ReminderBackend {
     }
     /// Declaration of implementation scope, NOT a runtime probe or permission claim.
     public static func capabilities() -> [String] {
-        ["implementation:ReminderKit-native", "liveVerification:unverified", "reminder:byID,find,create,sparseUpdate,complete,softDelete,restore",
+        ["implementation:ReminderKit-native", "liveVerification:priorSignedBuildOnly", "reminder:byID,find,create,sparseUpdate,complete,softDelete,restore",
          "catalog:lists,groups,sections,tags,customSmartLists,templates", "fields:dates,recurrence,earlyAlerts,location,vehicle,contact,url,images,joinedMemberAssignment",
          "smartFilters:tags,priorities,flagged,listsUnion,anyDate,civilDateRanges,oneDirectionRelativeDate,vehicle,noLocation",
          "listPosition:writeOnlyDirective",
@@ -117,8 +115,8 @@ public final class NativeReminderBackend: ReminderBackend {
             if case .smartList(.create) = command { try store().validateSmartListCreation() }
         }
     }
-    private func rawReminder(_ id: String, concealed: Bool = false) throws -> [String: Any]? {
-        try Translation.object(try store().reminder(id, concealed: concealed))
+    private func rawReminder(_ id: String, concealed: Bool = false, imageBytes: Bool = false) throws -> [String: Any]? {
+        try Translation.object(try store().reminder(id, concealed: concealed, imageBytes: imageBytes))
     }
     private func lookup(_ id: String) throws -> Reminder? {
         guard UUID(uuidString: id) != nil else { return nil } // Core then resolves an exact title.
@@ -131,7 +129,7 @@ public final class NativeReminderBackend: ReminderBackend {
     public func reminder(id: String) throws -> Reminder? { try serialized { try lookup(id) } }
     public func image(reminderID: String, imageID: String) throws -> ImageInput {
         try serialized {
-            guard let raw = try rawReminder(reminderID) else { throw Failure(.notFound, "Reminder not found") }
+            guard let raw = try rawReminder(reminderID, imageBytes: true) else { throw Failure(.notFound, "Reminder not found") }
             let images: [[String: Any]] = try Translation.value(raw, "images")
             guard let image = images.first(where: { ($0["id"] as? String)?.caseInsensitiveCompare(imageID) == .orderedSame }) else {
                 throw Failure(.notFound, "Image attachment not found")
@@ -147,12 +145,8 @@ public final class NativeReminderBackend: ReminderBackend {
     }
     private func allReminders(listID: String? = nil) throws -> [Reminder] {
         let store = try store()
-        let ids: [String]
-        if let listID { ids = [listID] }
-        else { ids = try store.lists().map { try Translation.value($0, "id") } }
-        var result: [Reminder] = []
-        for id in ids { result += try store.reminders(inList: id).map(Translation.reminder) }
-        return result
+        let ids: [String] = try listID.map { [$0] } ?? store.lists().map { try Translation.value($0, "id") }
+        return try ids.flatMap { try store.reminders(inList: $0).map(Translation.reminder) }
     }
     public func catalog(includeTags: Bool) throws -> Catalog {
         try serialized {
@@ -194,20 +188,14 @@ public final class NativeReminderBackend: ReminderBackend {
                     && (query.hasLocation == nil || (f.location != nil) == query.hasLocation)
                     && (query.assigneeID == nil || f.assigneeID?.caseInsensitiveCompare(query.assigneeID!) == .orderedSame)
                     && query.tags.allSatisfy { name in f.tags.contains { $0.caseInsensitiveCompare(name) == .orderedSame } }
-                    && (query.dueOnOrAfter == nil || f.due.map { !Self.civil($0).lexicographicallyPrecedes(Self.civil(query.dueOnOrAfter!)) } == true)
-                    && (query.dueBefore == nil || f.due.map { Self.civil($0).lexicographicallyPrecedes(Self.civil(query.dueBefore!)) } == true)
+                    && (query.dueOnOrAfter == nil || f.due.map { !Validation.components($0).lexicographicallyPrecedes(Validation.components(query.dueOnOrAfter!)) } == true)
+                    && (query.dueBefore == nil || f.due.map { Validation.components($0).lexicographicallyPrecedes(Validation.components(query.dueBefore!)) } == true)
             }
             return Array(result.prefix(max(0, query.limit)))
         }
     }
     private static func same(_ lhs: String?, _ rhs: String?) -> Bool {
         switch (lhs, rhs) { case (nil, nil): true; case (.some(let a), .some(let b)): a.caseInsensitiveCompare(b) == .orderedSame; default: false }
-    }
-    private static func civil(_ date: ReminderDate) -> [Int] {
-        switch date {
-        case .date(let d): [d.year, d.month, d.day, 0, 0, 0]
-        case .localDateTime(let d, let h, let m, let s): [d.year, d.month, d.day, h, m, s]
-        }
     }
     /// Everything after a confirmed native save is uncertain if readback fails.
     /// A lost readback is never represented as a definite no-write error.
@@ -224,55 +212,49 @@ public final class NativeReminderBackend: ReminderBackend {
         let images: [[String: Any]] = try Translation.value(raw, "images")
         try ImageStaging.verifyConsumed(staged, nativeImages: images, existingIDs: existingIDs, directory: lease.directory)
     }
+    /// Shared save/receipt/attachment lifecycle for creates and sparse updates.
+    /// Snapshot request-owned identities before any bridge read can reset them.
+    private func saveReminder(changes: [String: Any], images: [ImageInput], existingIDs: Set<String> = [],
+                              save: (RNBridge, [String: Any]) throws -> String,
+                              confirm: ([Reminder], Set<String>) throws -> Void = { _, _ in }) throws -> MutationResult {
+        let native = try store(), staging = images.isEmpty ? nil : try ImageStaging(images)
+        var changes = changes; changes["addImages"] = staging?.images
+        let id: String
+        do { id = try save(native, changes) }
+        catch {
+            if Self.failure(error).code != .outcomeUnknown { try? staging?.release() }
+            throw error
+        }
+        let receipt = Array(Set(native.lastSavedReminderIDs + [id])).sorted()
+        let introduced = Set(native.lastIntroducedReminderIDs.map { $0.uppercased() })
+        return try readback(ids: receipt) {
+            let changed = try receipt.map(requireReminder)
+            try confirm(changed, introduced)
+            try verifyImages(images, lease: staging, ownerID: id, existingIDs: existingIDs); try staging?.release()
+            return MutationResult(affectedIDs: receipt, reminders: changed)
+        }
+    }
     public func createReminder(_ draft: ReminderDraft) throws -> MutationResult {
         try serialized {
-            let native = try store()
             var changes = try Translation.creationFields(draft.fields)
-            // addReminder already creates in the supplied list, don't re-add it.
-            changes.removeValue(forKey: "listID")
-            let staging = draft.images.isEmpty ? nil : try ImageStaging(draft.images)
-            changes["addImages"] = staging?.images
-            let id: String
-            do { id = try native.createReminder(inList: draft.fields.listID, title: draft.fields.title, changes: changes) }
-            catch {
-                if Self.failure(error).code != .outcomeUnknown { try? staging?.release() }
-                throw error
-            }
-            let receipt = Array(Set(native.lastSavedReminderIDs + [id])).sorted()
-            return try readback(ids: receipt) {
-                let saved = try receipt.map(requireReminder)
-                try verifyImages(draft.images, lease: staging, ownerID: id, existingIDs: []); try staging?.release()
-                return MutationResult(affectedIDs: receipt, reminders: saved)
+            changes.removeValue(forKey: "listID") // Native creation already places it in this list.
+            return try saveReminder(changes: changes, images: draft.images) { native, fields in
+                try native.createReminder(inList: draft.fields.listID, title: draft.fields.title, changes: fields)
             }
         }
     }
     public func updateReminder(id: String, patch: ReminderPatch) throws -> MutationResult {
         try serialized {
-            let native = try store(), old = try requireReminder(id)
-            var changes = try Translation.patch(patch)
-            let projected = try patch.applying(to: old.fields)
-            let completingRecurrence = old.fields.recurrence != nil && !old.fields.completed && projected.completed
-            let staging = patch.addImages.isEmpty ? nil : try ImageStaging(patch.addImages)
-            changes["addImages"] = staging?.images
-            do { try native.updateReminder(id, changes: changes) }
-            catch {
-                if Self.failure(error).code != .outcomeUnknown { try? staging?.release() }
-                throw error
-            }
-            // Snapshot before any later bridge read resets its per-call receipt.
-            // Every ID belongs to this request, never to an account/list diff.
-            let receipt = Array(Set(native.lastSavedReminderIDs + [id])).sorted()
-            let introduced = Set(native.lastIntroducedReminderIDs.map { $0.uppercased() })
-            return try readback(ids: receipt) {
-                let changed = try receipt.map(requireReminder)
-                if completingRecurrence {
+            let old = try requireReminder(id), projected = try patch.applying(to: old.fields)
+            return try saveReminder(changes: Translation.patch(patch), images: patch.addImages, existingIDs: Set(old.images.map(\.id)), save: { native, fields in
+                try native.updateReminder(id, changes: fields); return id
+            }, confirm: { changed, introduced in
+                if old.fields.recurrence != nil && !old.fields.completed && projected.completed {
                     guard changed.contains(where: { introduced.contains($0.id.uppercased()) && $0.id.caseInsensitiveCompare(id) != .orderedSame && $0.fields.completed && $0.fields.recurrence == nil && $0.fields.title == projected.title }) else {
                         throw Failure(.backend, "Native recurrence save did not expose a request-owned completed-copy receipt")
                     }
                 }
-                try verifyImages(patch.addImages, lease: staging, ownerID: id, existingIDs: Set(old.images.map(\.id))); try staging?.release()
-                return MutationResult(affectedIDs: receipt, reminders: changed)
-            }
+            })
         }
     }
     public func deleteReminders(ids: [String]) throws -> MutationResult {
@@ -286,15 +268,19 @@ public final class NativeReminderBackend: ReminderBackend {
             }
         }
     }
-    public func restoreReminder(id: String, listID: String, knownChildIDs: [String]) throws -> MutationResult {
+    public func restoreReminder(id: String, listID: String, knownChildIDs: [String], parentID: String?) throws -> MutationResult {
         try serialized {
             guard let root = try rawReminder(id, concealed: true) else { throw Failure(.notFound, "Restorable root not found") }
-            let expectedParent = root["parentID"] as? String
+            let nativeParent = root["parentID"] as? String
+            if let nativeParent, let parentID, !Self.same(nativeParent, parentID) {
+                throw Failure(.conflict, "Deleted reminder's parent differs from journal evidence")
+            }
+            let expectedParent = parentID ?? nativeParent
             let nativeChildren: [String] = try Translation.value(root, "childIDs")
             let children = Set((knownChildIDs + nativeChildren).map { $0.uppercased() }).sorted()
             let ids = [id] + children
             let native = try store()
-            try native.restoreReminders(ids, toList: listID)
+            try native.restoreReminders(ids, toList: listID, parentID: expectedParent)
             let receipt = Array(Set(ids + native.lastSavedReminderIDs)).sorted()
             return try readback(ids: receipt) {
                 let reminders = try receipt.map(requireReminder)

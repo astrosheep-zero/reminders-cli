@@ -20,7 +20,7 @@ public enum Validation {
             }
         }
     }
-    static func components(_ date: ReminderDate) -> [Int] {
+    public static func components(_ date: ReminderDate) -> [Int] {
         let d = date.day
         if case .localDateTime(_, let h, let m, let s) = date { return [d.year, d.month, d.day, h, m, s] }
         return [d.year, d.month, d.day, 0, 0, 0]

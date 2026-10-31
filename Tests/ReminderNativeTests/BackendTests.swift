@@ -14,13 +14,16 @@ private final class OfflineBridge: RNBridge {
     var patch: [AnyHashable: Any] = [:]
     var tagReads = 0
     var reminderListReads = 0
+    var imageByteReads = 0
     var savedIDs: [String] = []
+    var savedParentID: String?
     var afterUpdate: (() -> Void)?
     var afterRestore: (() -> Void)?
     override var lastSavedReminderIDs: [String] { receipt }
     override var lastIntroducedReminderIDs: [String] { introduced }
-    override func reminder(_ identifier: String, concealed: Bool) throws -> Any {
-        (concealed ? hidden[identifier] : rows[identifier]) as Any? ?? NSNull()
+    override func reminder(_ identifier: String, concealed: Bool, imageBytes: Bool) throws -> Any {
+        if imageBytes { imageByteReads += 1 }
+        return (concealed ? hidden[identifier] : rows[identifier]) as Any? ?? NSNull()
     }
     override func lists() throws -> [[String: Any]] {
         [["id": "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB", "name": "Inbox", "pinned": false, "groceries": false,
@@ -41,8 +44,8 @@ private final class OfflineBridge: RNBridge {
     override func createReminder(inList listID: String, title: String, changes: [AnyHashable: Any]) throws -> String {
         savedIDs = receipt; return receipt[0]
     }
-    override func restoreReminders(_ identifiers: [String], toList listID: String) throws {
-        savedIDs = identifiers; afterRestore?()
+    override func restoreReminders(_ identifiers: [String], toList listID: String, parentID: String?) throws {
+        savedIDs = identifiers; savedParentID = parentID; afterRestore?()
     }
     override func replaceTag(_ name: String, replacement: String?) throws -> NSNumber { NSNumber(value: receipt.count) }
 }
@@ -68,6 +71,19 @@ struct NativeBackendTests {
         #expect(bridge.tagReads == 1)
         #expect(bridge.reminderListReads == 0)
     }
+    @Test func ordinaryReadsUseImageMetadataAndExplicitImageReadsBytes() throws {
+        let bridge = OfflineBridge(), backend = backend(bridge)
+        var raw = row(root)
+        raw["images"] = [["id": child, "fileName": "x.png", "type": "public.png", "size": 3]]
+        bridge.rows[root] = raw
+        let item = try #require(try backend.reminder(id: root))
+        #expect(item.images[0].byteCount == 3)
+        #expect(bridge.imageByteReads == 0)
+        raw["images"] = [["id": child, "fileName": "x.png", "type": "public.png", "size": 3, "data": Data([1, 2, 3])]]
+        bridge.rows[root] = raw
+        #expect(try backend.image(reminderID: root, imageID: child).bytes == Data([1, 2, 3]))
+        #expect(bridge.imageByteReads == 1)
+    }
     @Test func titlePatchAndOperationOwnedReceiptsNeverScanLists() throws {
         let bridge = OfflineBridge(); bridge.rows[root] = row(root)
         bridge.receipt = [root, child]; bridge.rows[child] = row(child, title: "Touched parent")
@@ -90,21 +106,22 @@ struct NativeBackendTests {
         #expect(Set(result.affectedIDs) == [root, child])
     }
     @Test func independentlyDeletedChildRestorePreservesActiveParent() throws {
-        let bridge = OfflineBridge(); bridge.hidden[child] = row(child, parent: root); bridge.receipt = [child, root]
+        let bridge = OfflineBridge(); bridge.hidden[child] = row(child); bridge.receipt = [child, root]
         bridge.afterRestore = {
             bridge.rows[self.child] = self.row(self.child, parent: self.root)
             var parent = self.row(self.root); parent["childIDs"] = [self.child]; bridge.rows[self.root] = parent
         }
-        let result = try backend(bridge).restoreReminder(id: child, listID: list, knownChildIDs: [])
+        let result = try backend(bridge).restoreReminder(id: child, listID: list, knownChildIDs: [], parentID: root)
         #expect(result.reminders.first(where: { $0.id == child })?.fields.parentID == root)
         #expect(Set(result.affectedIDs) == [child, root])
         #expect(bridge.savedIDs == [child])
+        #expect(bridge.savedParentID == root)
     }
     @Test func restoreMissingReadbackRemainsUnknownWithEveryKnownID() throws {
         let bridge = OfflineBridge(); var deletedRoot = row(root); deletedRoot["childIDs"] = [child]
         bridge.hidden[root] = deletedRoot
         bridge.afterRestore = { bridge.rows[self.root] = self.row(self.root) }
-        do { _ = try backend(bridge).restoreReminder(id: root, listID: list, knownChildIDs: [child]); Issue.record("Missing child must not disappear from confirmation") }
+        do { _ = try backend(bridge).restoreReminder(id: root, listID: list, knownChildIDs: [child], parentID: nil); Issue.record("Missing child must not disappear from confirmation") }
         catch let failure as Failure {
             #expect(failure.code == .outcomeUnknown)
             #expect(Set(failure.affectedIDs) == [root, child])

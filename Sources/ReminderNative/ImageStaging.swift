@@ -3,7 +3,6 @@ import Darwin
 import ImageIO
 import UniformTypeIdentifiers
 import ReminderCore
-import CryptoKit
 
 /// Files belong to the worker, never to a frontend path. A lease survives an
 /// uncertain save; deleting then could race the system's attachment consumption.
@@ -65,11 +64,11 @@ final class ImageStaging {
         return (width, height)
     }
     /// Every attachment must be independent of the lease, and each input needs a
-    /// distinct newly added attachment receipt. An old identical image cannot
-    /// mask a newly added attachment that still points to staging.
+    /// distinct newly added attachment ID. Metadata proves native consumption;
+    /// attachment bytes remain an explicit image-read concern only.
     static func verifyConsumed(_ inputs: [ImageInput], nativeImages: [[String: Any]], existingIDs: Set<String>, directory: URL) throws {
         let root = directory.resolvingSymlinksInPath().standardizedFileURL.path
-        var available: [String] = []
+        var newIDs: Set<String> = []
         for image in nativeImages {
             let source: URL = try Translation.value(image, "sourceURL")
             let path = source.resolvingSymlinksInPath().standardizedFileURL.path
@@ -77,16 +76,10 @@ final class ImageStaging {
                 throw Failure(.backend, "Native attachment still aliases staging; private lease retained")
             }
             let id: String = try Translation.value(image, "id")
-            if existingIDs.contains(where: { $0.caseInsensitiveCompare(id) == .orderedSame }) { continue }
-            let data: Data = try Translation.value(image, "data")
-            available.append(SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined())
+            if !existingIDs.contains(where: { $0.caseInsensitiveCompare(id) == .orderedSame }) { newIDs.insert(id.uppercased()) }
         }
-        for image in inputs {
-            let hash = SHA256.hash(data: image.bytes).map { String(format: "%02x", $0) }.joined()
-            guard let index = available.firstIndex(of: hash) else {
-                throw Failure(.backend, "New native image receipt is not yet independently readable; private lease retained")
-            }
-            available.remove(at: index)
+        guard newIDs.count >= inputs.count else {
+            throw Failure(.backend, "New native image metadata receipts are incomplete; private lease retained")
         }
     }
     func release() throws {

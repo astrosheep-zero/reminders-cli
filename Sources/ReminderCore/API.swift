@@ -77,18 +77,6 @@ public struct MutationResult: Codable, Sendable, Equatable {
     public init(affectedIDs: [String], reminders: [Reminder] = [], lists: [ReminderList] = []) {
         self.affectedIDs = affectedIDs; self.reminders = reminders; self.lists = lists
     }
-    private enum CodingKeys: String, CodingKey { case affectedIDs, reminders, lists, count }
-    public init(from decoder: any Decoder) throws {
-        let values = try decoder.container(keyedBy: CodingKeys.self)
-        affectedIDs = try values.decode([String].self, forKey: .affectedIDs)
-        reminders = try values.decode([Reminder].self, forKey: .reminders)
-        lists = try values.decode([ReminderList].self, forKey: .lists)
-    }
-    public func encode(to encoder: any Encoder) throws {
-        var values = encoder.container(keyedBy: CodingKeys.self)
-        try values.encode(affectedIDs, forKey: .affectedIDs); try values.encode(reminders, forKey: .reminders)
-        try values.encode(lists, forKey: .lists); try values.encode(count, forKey: .count)
-    }
 }
 public struct DeletedResult: Codable, Sendable, Equatable {
     public enum Scope: String, Codable, Sendable { case toolOnly }
@@ -126,8 +114,8 @@ public protocol ReminderBackend: AnyObject {
     func updateReminder(id: String, patch: ReminderPatch) throws -> MutationResult
     /// One native request/save must include all IDs; never loop and individually save children.
     func deleteReminders(ids: [String]) throws -> MutationResult
-    /// Restores root + saved children + any additional native children. Report every affected ID.
-    func restoreReminder(id: String, listID: String, knownChildIDs: [String]) throws -> MutationResult
+    /// Restores root + saved children + any additional native children using the saved parent evidence.
+    func restoreReminder(id: String, listID: String, knownChildIDs: [String], parentID: String?) throws -> MutationResult
     func list(_ action: ListAction) throws -> MutationResult
     func group(_ action: GroupAction) throws -> MutationResult
     func section(_ action: SectionAction) throws -> MutationResult
@@ -149,7 +137,9 @@ public extension ReminderBackend {
         throw Failure(.unsupported, "Update unavailable")
     }
     func deleteReminders(ids: [String]) throws -> MutationResult { throw Failure(.unsupported, "Delete unavailable") }
-    func restoreReminder(id: String, listID: String, knownChildIDs: [String]) throws -> MutationResult { throw Failure(.unsupported, "Restore unavailable") }
+    func restoreReminder(id: String, listID: String, knownChildIDs: [String], parentID: String?) throws -> MutationResult {
+        throw Failure(.unsupported, "Restore unavailable")
+    }
     func list(_ action: ListAction) throws -> MutationResult { throw Failure(.unsupported, "List mutation unavailable") }
     func group(_ action: GroupAction) throws -> MutationResult { throw Failure(.unsupported, "Group mutation unavailable") }
     func section(_ action: SectionAction) throws -> MutationResult { throw Failure(.unsupported, "Section mutation unavailable") }

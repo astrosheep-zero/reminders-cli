@@ -13,11 +13,11 @@ The implementation conforms to `ReminderCore.ReminderBackend`. Calls are synchro
 
 Normal reads require already granted full Reminders access before opening the native store. They never request it. Setup alone constructs an `EKEventStore` and requests full access, with a bounded synchronous wait and an Objective-C exception fence. Backend construction, `authorizationStatus`, and static `capabilities` do not construct `REMStore`. The status function returns `unavailable` if the public-framework query throws an Objective-C exception.
 
-An explicit doctor may use an all-zero valid UUID lookup after observing full access: this opens the bridge and performs a direct ID fetch, returning nil for a successful miss, not an empty account scan. This probe was **not executed** during verification.
+An explicit doctor may use an all-zero valid UUID lookup after observing full access: this opens the bridge and performs a direct ID fetch, returning nil for a successful miss, not an empty account scan. The current signed CLI/MCP release regression passed this probe; offline tests never invoke it. See [coverage](coverage.md) for build-specific evidence.
 
 ## Core integration refinement
 
-The Holder authorized these narrow changes to the accepted Core interface in this Native contract:
+The original Native integration introduced these accepted Core refinements (retained by the facade/MCP revision):
 
 - `Command.catalog(includeTags: Bool)` and `ReminderBackend.catalog(includeTags: Bool)` explicitly select metadata-only or tag-inclusive projection.
 - Every Core name/reference-resolution path requests `false`; explicit catalog forwards its flag; a tag mutation requests `true`.
@@ -33,10 +33,10 @@ The Holder authorized these narrow changes to the accepted Core interface in thi
 | --- | --- |
 | Reminder lookup | `REMReminder.objectIDWithUUID:` and `REMStore.fetchRemindersWithObjectIDs:fetchOptions:error:` with due-date-delta alerts. No account scan to locate an ID. A non-UUID reference returns nil for Core's separate exact-title resolution. |
 | Ordinary find | Native list/reminder fetches, then explicit typed query predicates. Smart-list filters are **not** simulated by these predicates. |
-| Rich reminder read | Civil due/start, recurrence, early alerts, flags/priority/urgent/completed, tags, section/manual neighbor, URL/images, location/vehicle/contact triggers, assignment and children. Full reminder image metadata includes SHA-256 of actual bytes. |
+| Rich reminder read | Civil due/start, recurrence, early alerts, flags/priority/urgent/completed, tags, section/manual neighbor, URL/images, location/vehicle/contact triggers, assignment and children. Ordinary reads and post-save attachment confirmation include native image metadata without opening attachment files; only explicit image reads consume bytes. |
 | Create/update/complete | Native save request/change items. Updates translate sparse `Change` values: absent never writes, clear is explicit, and set-to-same preserves user intent. Title-only updates do not rebuild alarms, recurrence, assignment, attachments or ordering. |
 | Soft deletion | Every supplied root/child enters **one request and synchronous save**. Core journals the exact IDs first. No purge. |
-| Deleted-by-ID/restore | Concealed ID fetch; children whose obsolete listID persists are checked through their parent. Known and native-discovered children are restored/reparented in one save. An independently deleted subtask rejoins its validated active top-level parent in the target list. Every restored tree record and relationship is read back strictly. |
+| Deleted-by-ID/restore | Concealed ID fetch; children whose obsolete listID persists are moved in the recovery save. Saved parent evidence is supplied to native recovery; deleted-state root/child parent pointers may be absent, while contradictory pointers refuse before saving. If recovery leaves an expected root/child parent link missing, all missing links are repaired in one conditional follow-up save. An independently deleted subtask rejoins its validated active top-level parent in the target list. Every restored tree record and relationship is read back strictly; repair failure remains outcome-unknown with retained receipts. |
 | Lists/groups | Native create/update/remove, grouping, appearance, pin/grocery/sort and ordering contexts. List position is a **write-only ordering directive**: reads return nil, nil writes mean no ordering request, not 'erase manual ordering'. |
 | Sections | Native section creation/rename/removal, explicit ordering, membership storage with a nonnil list UUID for 'no section' (nil group UUID is a known native trap). |
 | Tags | Requested catalog counts use a lightweight raw scan; rename/removal uses one request. Receipts come from the request's actual selected changes, not an earlier Swift scan or a count-only comparison. |
@@ -49,11 +49,13 @@ Ordinary by-ID reads fetch the requested object directly. Reading its manual nei
 
 `REMSaveRequest.trackedReminderChangeItems` is captured immediately before and after the synchronous save. Only UUIDs owned by that request are used for reminder receipts; unrelated concurrent list creations are never attributed via before/after list differences. Create, update, tag replacement and template/list creation use this receipt. A recurring completion additionally requires a newly introduced request-owned completed nonrecurring copy with matching title. IDs already tracked before save, including a touched existing parent/neighbor, cannot satisfy this proof; only IDs introduced to that request during save qualify. Missing copy evidence becomes `outcomeUnknown`, not a fabricated complete receipt. Tracking a change is conservative evidence of participation in this save, not an atomic cross-device causal proof.
 
+Native create/update now share one staging/save/receipt/confirmation lifecycle, and entity creation/update share guarded save edges. The shared edges still call the existing request-owned `commit` inside the same exception fence; they do not bypass Core, the mutation marker, journal or readback. Creation fields are lifted into typed sparse sets through Core's private Codable representation, eliminating a second manually maintained field list; only the facade exposes stable public JSON.
+
 A native validation refusal before save is definite. Once `saveSynchronouslyWithError:` has been entered, exception, false result, NSError, lost readback or relationship/attachment confirmation failure is uncertain. Known affected IDs are retained. Confirmation is **local-system acceptance only**, never proof that another device received an iCloud update. Core's version check remains optimistic read/check/save, not a distributed CAS.
 
 ### Preflight and exception containment
 
-`checkSupport` first validates/encodes values and image bytes, then calls a **closed capability-token** metadata checker in `Preflight.m`. The checker verifies method existence, argument count, return encoding and every argument encoding for the selected command/fields before Core emits `mutationStarted`. Forwarded setters are checked on their actual storage classes; `respondsToSelector:` by itself is not trusted. Arbitrary class/selector names are never accepted from CLI/Core.
+`checkSupport` first validates/encodes values and image bytes, then calls a **closed capability-token** metadata checker in `Preflight.m`. Repeated capability branches are now a closed ABI-signature table; callers still cannot supply a selector. `RN_SEND` generates otherwise identical nil-receiver fences while retaining explicit object/scalar/void C function signatures for each send. The checker verifies method existence, argument count, return encoding and every argument encoding for the selected command/fields before Core emits `mutationStarted`. Forwarded setters are checked on their actual storage classes; `respondsToSelector:` by itself is not trusted. Arbitrary class/selector names are never accepted from CLI/Core.
 
 Resolved restore targets additionally read `account.capabilities.supportsRecentlyDeletedList`; custom-smart creation reads `supportsCustomSmartLists`. These are authorized, nonprompting preflight reads, not saves. Missing/changed APIs and unsupported account capabilities fail explicitly. Metadata cannot prove dynamically forwarded object behavior, per-account data shape, or eventual native success; the entry-point exception fence remains necessary.
 
@@ -63,9 +65,11 @@ Every bridge entry point, including framework loading/store initialization, is e
 
 Frontend supplies bounded bytes and a content type, never a source path. ImageIO checks the declared/detected type, one frame, positive/bounded dimensions and decodability. The worker creates an unpredictable private directory with mode 0700 and exclusively created mode-0600 files; suffixes derive from the validated type, not the untrusted filename. Files survive through native save and strict readback.
 
-Cleanup requires each staged input to have a **distinct newly added attachment ID** on its actual owner with matching bytes. Existing attachment IDs cannot satisfy the requirement, even if their bytes match. Any attachment whose resolved file URL still lies inside the staging directory prevents cleanup. Symlink aliases are resolved. A hard link outside the directory is safe to retain after unlinking the staging name and is not rejected merely for sharing an inode. Duplicate input bytes require multiple new receipts, not one hash-set hit.
+Cleanup requires each staged input to have a **distinct newly added attachment ID** on its actual owner. Existing attachment IDs cannot satisfy the requirement, and duplicate inputs require multiple new IDs. Any attachment whose resolved file URL still lies inside the staging directory prevents cleanup. Symlink aliases are resolved. A hard link outside the directory is safe to retain after unlinking the staging name and is not rejected merely for sharing an inode. Confirmation uses metadata only; image bytes are never reopened or hashed after save.
 
-A definite pre-save failure cleans safely. An uncertain save or incomplete consumption leaves the private directory intact (`reminder-images-*` under the worker's temporary directory), without automatic retry or age-based deletion that might race native consumption. These leftovers may need manual cleanup after the outcome is established. Native byte normalization/delayed attachment download can prevent confirmation; that is reported uncertain rather than claiming success and deleting early.
+A definite pre-save failure cleans safely. An uncertain save or incomplete metadata consumption leaves the private directory intact (`reminder-images-*` under the worker's temporary directory), without automatic retry or age-based deletion that might race native consumption. These leftovers may need manual cleanup after the outcome is established. Native byte normalization, delayed attachment download, and unreadable attachment content do not block a metadata-confirmed add; they affect only explicit image reads.
+
+The prior signed build's explicit image byte read still failed with `NSCocoaErrorDomain/257`. That is a recorded permission-remediation follow-up, not a repaired feature in this revision. The root permission mechanism is not yet established: do not invent an authorization entry, prescribe Full Disk Access as a verified fix, or turn ordinary operations into permission prompts.
 
 ## Capability limitations (explicit, not empty success)
 
@@ -75,7 +79,7 @@ A definite pre-save failure cleans safely. An uncertain save or incomplete consu
 - Native multiple recurrence rules, recurrence weeks-of-year/days-of-year/setPositions, multiple URL attachments and multiple location/vehicle triggers cannot be represented losslessly by current Core models; reading such a reminder fails unsupported. Unknown enum values also fail explicitly.
 - Non-default sort directions not modeled by Core fail unsupported on read, rather than being rewritten as another sort.
 - Reminder `clear(position)` is unsupported; the system has no evidenced 'unordered' state. List position instead has the write-only directive semantics documented above.
-- Missing optional selectors, non-downloaded/unreadable image content, unsupported account recovery or custom-smart capabilities, and private-framework drift can prevent an operation. Metadata class presence does not promise account support.
+- Missing optional selectors, unsupported account recovery or custom-smart capabilities, and private-framework drift can prevent an operation. Non-downloaded/unreadable image content can prevent explicit image reads, not ordinary reminder queries or metadata-confirmed adds. Metadata class presence does not promise account support.
 - Templates use the default account's template view, as evidenced by the references; accounts with different capabilities may refuse operations. No account selection/invitation feature is claimed.
 
 ## API evidence, provenance and observed environment
@@ -84,7 +88,7 @@ Independent implementation, **not copied reference bodies**. The unlicensed `app
 
 - `apple-mcp` revision `28c77470a90957440f2c3d9b1f8626e4857ac176`: `Sources/ReminderKitShim/RKBridge.m`, `Sources/RemindersComponent/Store/Model.swift`, `Sources/RemindersComponent/SmartFilter.swift`, build-app entitlement/signing declarations.
 - `remctl` revision `3a105720a603787ffae9abfa29e45c0c9921494e`: `remctl-private.m`, `remctl_smart_lists.py`, `docs/notes/private-api-audit-2026-08-12.md`. Its SQLite/EventKit fallback architecture is **not** adopted.
-- Observed host: macOS **27.2**, build **26B123**, arm64; Apple Swift **6.4** (`swiftlang-6.4.0.34.1`), clang **2100.3.34.1**; deployment target remains macOS 26+.
+- Original metadata-inspection host: macOS **27.2**, build **26B123**, arm64; Apple Swift **6.4** (`swiftlang-6.4.0.34.1`), clang **2100.3.34.1**. Current facade/MCP verification uses installed Swift **6.4.2**; deployment remains macOS 26+ with a Swift 6.2 manifest floor.
 
 Class-only inspection loaded ReminderKit/ReminderKitInternal, enumerated method/property metadata, and allocated **no private store, request, reminder or change-item objects**. A separate closed preflight probe tested all 43 declared feature tokens and succeeded after mapping section rename to forwarded `REMListSectionStorage.setDisplayName:`. These are runtime **metadata** observations, not live-data tests. The temporary raw outputs are under ignored `.build/native-metadata.txt`, `.build/native-tag-metadata.txt`, `.build/preflight-probe.txt`; the production preflight table retains the checked return/argument contracts below.
 
@@ -120,9 +124,9 @@ Selected actual host encodings (object `@`, signed integer `q`, unsigned `Q`, BO
 
 The native constructors/add/set-URL operations wrapped by `Required(...)` use **object-returning** contracts; the selected command/field mutation APIs plus common store/view/fetch-option constructors are checked by `Preflight.m`. Ordinary nullable property getters retain their evidenced object-return contracts and fail through the exception fence if forwarding is unavailable. Void setters use void-return casts and are never fed to ARC as object results. Return ABI is not inferred solely from the reference's function-pointer spelling. NSDate/Foundation operations use their normal compiled declarations.
 
-Historical reference evidence maps recurrence daily/weekly/monthly/yearly/hourly to 0...4; early-alert minutes/hours/days/weeks/months to 0...4 with **negative** native counts; priorities none/high/medium/low to 0/1/5/9; location arriving/leaving and vehicle getting-in/out to 1/2; joined shared-list member status to 1. These integer meanings are validated in pure tests, but were not verified against user data on this host. Unknown values are refused before they reach native traps.
+Historical reference evidence maps recurrence daily/weekly/monthly/yearly/hourly to 0...4; early-alert minutes/hours/days/weeks/months to 0...4 with **negative** native counts; priorities none/high/medium/low to 0/1/5/9; location arriving/leaving and vehicle getting-in/out to 1/2; joined shared-list member status to 1. These integer meanings were originally established through metadata/reference evidence and pure fixtures. The subsequent signed-build live matrix exercised the supported field families; this revision rechecks them offline, not through new user-data access. Unknown values are refused before they reach native traps.
 
-Reference packaging uses hardened runtime plus `com.apple.security.personal-information.calendars` and opens ReminderKit directly. Neither reference's inspected bridge requires `_LSSet...` or RemindersKitUserExtras startup SPI. This is static evidence only; no assertion is made that signing identity, TCC attribution, permissions, hardened-runtime native calls or cross-device sync work in the final packaged app.
+Reference packaging uses hardened runtime plus `com.apple.security.personal-information.calendars` and opens ReminderKit directly. Neither reference's inspected bridge requires `_LSSet...` or RemindersKitUserExtras startup SPI. That reference inspection is static evidence only. Separately, previous signed-build data operations were live exercised; neither that historical success nor current offline tests establish TCC attribution, newly prompted permission, cross-device sync, or live correctness of the new facade/MCP binary.
 
 ## Production size
 
@@ -130,31 +134,36 @@ Physical lines, including comments and blanks (tests/docs/Core integration exclu
 
 | File | Lines |
 | --- | ---: |
-| Native Swift: ImageStaging | 99 |
-| Native Swift: NativeReminderBackend | 422 |
+| Native Swift: ImageStaging | 92 |
+| Native Swift: NativeReminderBackend | 408 |
 | Native Swift: SmartFilters | 142 |
-| Native Swift: Translation | 227 |
-| **Native Swift subtotal** | **890** |
-| ObjC: Preflight.m | 175 |
-| ObjC: ReminderKitShim.m | 955 |
+| Native Swift: Translation | 211 |
+| **Native Swift subtotal** | **853** |
+| ObjC: Preflight.m | 98 |
+| ObjC: ReminderKitShim.m | 959 |
 | ObjC public header | 61 |
-| **Native production total** | **2,081** |
+| **Native production total** | **1,971** |
 
-This is inside the contract's intended 1,800–3,000-line Native budget; the whole-product budget remains a separate integration constraint. No minification or line padding was used.
+This is 157 lines below the 2,128-line starting Native worktree, including its pre-existing image/recovery repairs. The unused duplicate section-list bridge entry is removed; list-scoped CLI/MCP sections still use the typed catalog projection. Typed Core operations remain intact. No minification, source relocation into tests or compatibility shim is used.
 
 ## Verification and non-evidence
 
-At candidate preparation:
+Current facade/MCP worktree (offline, not a new signed/live build):
 
 ```text
 swift build                                      PASS
-bash scripts/test.sh --filter 'ReminderNativeTests|NativeBackendTests'   24 tests PASS
-bash scripts/test.sh --filter ReminderCoreTests    33 tests PASS
-class-only RNPreflight probe                      43 feature tokens PASS
+bash scripts/test.sh                             108 tests PASS
+  Runtime 13 / Native 36 / Core 33 / CLI+facade+MCP 26
+closed RNPreflight feature table + unknown token  PASS (metadata only, no store)
+creation-to-sparse-field translation              PASS
 ```
 
 The test wrapper loads the **installed real Swift Testing macro plugin** on this CLT release. It does not replace Testing/XCTest with a fake framework. Plain default `swift test` can fail macro discovery on this toolchain; the Holder amended contract verification to the wrapper. Linker warnings about missing optional CLT Developer framework search directories are environment warnings; builds/tests completed.
 
-Offline tests cover civil dates, recurrence/enum mapping, sparse patches and clearing, unsupported-vs-empty, unknown filter preservation and OR/default-AND semantics, image byte hashes/permissions/lease ownership, exception fences, lazy construction, denial without store construction, exact request-owned receipts, metadata-only catalog, restored subtask parent and strict missing-child confirmation. ObjC bridge doubles implement the current boundary, never an old Core compatibility API.
+Offline tests cover civil dates, recurrence/enum mapping, sparse patches and clearing, unsupported-vs-empty, unknown filter preservation and OR/default-AND semantics, image metadata receipts/permissions/lease ownership, exception fences, lazy construction, denial without store construction, exact request-owned receipts, metadata-only catalog, restored subtask parent and strict missing-child confirmation. ObjC bridge doubles implement the current boundary, never an old Core compatibility API.
 
-**Not performed:** any real reminder-store read, any save/delete/restore, any permission request, app launch, keychain/TCC/settings change, hardened-runtime data call, account capability read, remote-device observation, or signing-identity acceptance test. Class metadata + compilation + offline doubles do **not** establish full native runtime correctness. A future human-authorized live smoke must use unique owned fixtures, explicit setup, strict receipt/readback and scoped cleanup; remote sync still needs independent human observation.
+### Previous live evidence versus this revision
+
+Signed build `D6E95B9B-AA35-422E-984C-3DF067D04B5E` was live exercised on 2026-10-31 after 98 offline tests: supported command/field/filter families, joined assignment, templates/content, ordinary image metadata/add/remove, soft deletion and root/child/parent/image restore variants. The independently deleted subtask parent repair was live rechecked. Those local ignored receipts are summarized in [coverage](coverage.md), not replaced by current mock evidence.
+
+**Subsequent release verification:** signed build `1B3C0A7C-8009-4199-9CCB-4D36646FF410` passed a focused CLI/MCP live regression for doctor, creation/tagged dates, cross-frontend editing, independent child recovery, recurring completed-copy receipts, image metadata/add/remove and owned-list cleanup. This does not repeat the entire prior field/account matrix. No setup, permission prompt or keychain/TCC/settings change was performed. Explicit image bytes remain failed 257 and cross-device sync remains unverified. Full release evidence is in [coverage](coverage.md).

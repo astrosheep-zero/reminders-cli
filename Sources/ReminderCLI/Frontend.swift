@@ -3,6 +3,7 @@ import Dispatch
 import Darwin
 import ReminderCore
 import ReminderRuntime
+import ReminderFacade
 
 func writeError(_ text: String) { try? FileHandle.standardError.write(contentsOf: Data(text.utf8)) }
 
@@ -10,21 +11,19 @@ func writeError(_ text: String) { try? FileHandle.standardError.write(contentsOf
 final class FrontendInterrupts {
     let cancellation = RuntimeCancellation()
     private var sources: [DispatchSourceSignal] = []
-    private let oldInterrupt: sig_t?
-    private let oldTerminate: sig_t?
-    init() {
-        oldInterrupt = signal(SIGINT, SIG_IGN)
-        oldTerminate = signal(SIGTERM, SIG_IGN)
+    private var originals: [(Int32, sig_t?)] = []
+    init(onInterrupt: @escaping @Sendable () -> Void = {}) {
         let token = cancellation
         for number in [SIGINT, SIGTERM] {
+            originals.append((number, signal(number, SIG_IGN)))
             let source = DispatchSource.makeSignalSource(signal: number, queue: .global(qos: .userInitiated))
-            source.setEventHandler { token.cancel() }
+            source.setEventHandler { token.cancel(); onInterrupt() }
             source.resume(); sources.append(source)
         }
     }
     deinit {
         sources.forEach { $0.cancel() }
-        signal(SIGINT, oldInterrupt); signal(SIGTERM, oldTerminate)
+        originals.forEach { signal($0.0, $0.1) }
     }
 }
 
@@ -35,29 +34,21 @@ func frontend(_ arguments: [String], client: RuntimeClient = RuntimeClient(), bu
     let output: OutputEnvelope
     do {
         let invocation = try CLIParser.parse(arguments)
-        let request: WorkerRequest
+        let request: WorkerRequest?
         let projection: String?
-        let deadline: TimeInterval
         switch invocation.request {
-        case .help:
-            if !invocation.json {
-                try FileHandle.standardOutput.write(contentsOf: Data((CLIParser.help + "\n").utf8))
-                return 0
+        case .help: request = nil; projection = nil
+        case .setup: request = .setup; projection = nil
+        case .doctor: request = .doctor; projection = nil
+        case .mcp: throw invalid("Run reminder mcp without other arguments")
+        case .operation(let command, let view): request = .operation(command); projection = view
+        }
+        if let request {
+            let interrupts = FrontendInterrupts()
+            output = withExtendedLifetime(interrupts) {
+                RemindersFacade(client: client, buildID: buildID).execute(request, projection: projection, cancellation: interrupts.cancellation)
             }
-            let helpOutput = OutputEnvelope(status: .ok, result: .object(["kind": .string("help"), "help": .string(CLIParser.help)]), warnings: [])
-            try FileHandle.standardOutput.write(contentsOf: helpOutput.json() + Data([10]))
-            return 0
-        case .setup: request = .setup; projection = nil; deadline = RuntimeLimits.setupDeadline
-        case .doctor: request = .doctor; projection = nil; deadline = RuntimeLimits.defaultDeadline
-        case .operation(let command, let view): request = .operation(command); projection = view; deadline = RuntimeLimits.defaultDeadline
-        }
-        let data = try JSONEncoder().encode(request)
-        let interrupts = FrontendInterrupts()
-        let reply = withExtendedLifetime(interrupts) {
-            client.execute(request: data, buildID: buildID, deadline: deadline, cancellation: interrupts.cancellation)
-        }
-        if !reply.diagnostics.isEmpty { try? FileHandle.standardError.write(contentsOf: reply.diagnostics) }
-        output = Presentation.transport(reply, request: request, projection: projection)
+        } else { output = OutputEnvelope(status: .ok, result: .object(["kind": .string("help"), "help": .string(CLIParser.help)])) }
     } catch {
         output = .failure(error as? Failure ?? Failure(.io, String(describing: error)))
     }

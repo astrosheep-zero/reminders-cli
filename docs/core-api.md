@@ -21,13 +21,17 @@ worker; do not use the backend concurrently elsewhere. Backend and callback must
 There is no batch command, automatic retry, global transaction, or cross-device CAS. A successful save
 means local acceptance, not proof of iCloud delivery.
 
-All public boundary values are `Codable`, `Sendable`, and `Equatable`; enums use Swift's synthesized
-associated-value Codable representation. Consumers should encode/decode Core types rather than maintain
-shadow schemas. Constructors supply defaults for Swift callers; synthesized struct decoding requires
-nonoptional keys even if a Swift stored-property default exists, except `ReminderPatch` whose omitted
-keys decode as absent (image arrays default empty). `Change<T>` is `.absent`, `.set(T)`, or `.clear`;
-null is rejected rather than equated with absence. `ReminderPatch()` starts with all fields absent and
-empty image additions/removals. Use explicit tagged values when supplying a patch as JSON.
+Core boundary values are `Codable`, `Sendable`, and `Equatable`; enums retain Swift's synthesized
+associated-value representation for internal worker transport and typed Swift clients. This is **not**
+the CLI/MCP JSON contract. The shared facade owns a single stable schema/codec/dispatch registry:
+public enum objects use `kind`/`value`, and public patches use `set` plus an explicit `clear` array,
+never raw `Change` wrappers or `_0`. See [facade API](facade-api.md).
+
+Constructors supply defaults for Swift callers. Synthesized struct decoding requires nonoptional keys,
+except `ReminderPatch`: decoding defaults are scoped to its CodingKeys, so omitted changes are absent
+and omitted image arrays are empty, without a second manual per-field decoder. Present null still
+fails. `Change<T>` remains `.absent`, `.set(T)` or `.clear`; `ReminderPatch()` is entirely absent with
+empty image additions/removals. Other Core models do not inherit patch-specific decoding defaults.
 
 `Command` covers:
 
@@ -41,7 +45,9 @@ empty image additions/removals. Use explicit tagged values when supplying a patc
 `OperationResult` cases are `.reminders([Reminder])`, `.catalog(Catalog)`,
 `.mutation(MutationResult)`, `.deleted(DeletedResult)`, `.image(ImageInput)`.
 `MutationResult` has `affectedIDs`, verified/known `reminders`, `lists`, and computed `count`.
-The serialized count is always derived from `affectedIDs.count`, including when decoding a receipt.
+Count always derives from `affectedIDs.count`, including after decoding a receipt. It is no longer
+redundantly encoded in the internal Core mutation payload; facade presentation emits computed count
+once in public CLI/MCP output.
 A mutation receipt must enumerate every known affected ID,
 including recurring copies and subtasks. `DeletedResult.scope` is the one-case enum `toolOnly`.
 
@@ -57,7 +63,7 @@ it is not an assertion that all affected IDs were fully verified.
 
 `ReminderFields` includes title, listID, notes, due, start, recurrence, earlyAlerts, location, contact,
 url, priority, flagged, urgent, completed, tags, parentID, sectionID, position, and assigneeID.
-`Reminder` adds ID, images (ID/name/type/size/contentHash), childIDs, and `version() throws -> String`.
+`Reminder` adds ID, images (ID/name/type/native size), childIDs, and `version() throws -> String`. Image bytes are not part of ordinary reminder reads or version tokens.
 `ReminderDraft` adds image bytes. `ReminderPatch` exposes every field as Change plus addImages and
 removeImageIDs. Clearing title/list is forbidden; boolean/priority/tags/early-alert clears reset to
 false/none/empty; optional-field clears remove that field. Completing uses the same sparse backend
@@ -132,7 +138,7 @@ not a fabricated zero-write failure.
   `restorableState(id:)`. Reads/preflight **must not save**. `reminder(id:)` uses native by-ID lookup and
   case-insensitive IDs. If an implementation lacks native lookup it must document its fallback.
 - `createReminder(_:)`, `updateReminder(id:patch:)`, `deleteReminders(ids:)`,
-  `restoreReminder(id:listID:knownChildIDs:)`, and typed per-family action methods return MutationResult.
+  `restoreReminder(id:listID:knownChildIDs:parentID:)`, and typed per-family action methods return MutationResult.
   Core calls onMutation immediately before entering any of them. Native must not perform mutating
   methods from any other path. Sparse update must honor absent versus set/clear, never rewrite untouched
   native recurrence/alarm/order state. References in set fields are normalized to IDs by Core.
@@ -141,7 +147,7 @@ not a fabricated zero-write failure.
   Native to select again. Empty clear-completed returns count=0 without native mutation.
   No clone/delete cross-list fallback. Refuse cross-list parenting, nesting, self-parenting, parent
   moves with children, or invalid neighbor/section. Backend should enforce native limits too.
-- `restoreReminder` gets saved child IDs plus root and target list. It must restore/report all known
+- `restoreReminder` gets saved child and parent IDs plus root and target list. It must restore/report all known
   children and any additional native-discovered children. Core independently reads back every ID and
   verifies list and saved parent relationships; any missing/failed read is unknown, not compactMap loss.
   A restored subtask may also touch its already-active parent. Only the restored root's actual top-level
@@ -192,5 +198,5 @@ in two suites, including four subprocesses preserving all 120 journal updates. T
 wrapper loads the installed TestingMacros plugin and disables unavailable XCTest discovery. Plain
 `swift test` initially fails this CLT installation's macro discovery; plain native build-system mode
 also lacks framework search paths. No behavior/package workaround is included in Core. Core production
-sources currently total 1,195 physical lines (including the untouched one-line placeholder); final
-receipt records the delivered count if later edits change it.
+sources currently total 1,207 physical lines; the obsolete placeholder is removed. Current whole-worktree
+verification and the separate prior signed-live evidence are recorded in [coverage](coverage.md).

@@ -1,6 +1,7 @@
 import Foundation
 import Security
 import ReminderCore
+import ReminderFacade
 
 /// Static bundle/signature inspection is separate from the explicitly authorized, read-only sentinel probe.
 enum Doctor {
@@ -48,7 +49,8 @@ enum Doctor {
                          probe: () throws -> Void) -> Diagnostics {
         let (bundle, signature) = inspectBundle(executable)
         var diagnostic = Diagnostics(authorization: authorization, sandbox: BuildIdentity.sandbox, buildID: BuildIdentity.current,
-                                     capabilities: capabilities, notes: BuildIdentity.notes, bundle: bundle, signature: signature)
+                                     capabilities: capabilities, notes: BuildIdentity.notes)
+        diagnostic.bundle = bundle; diagnostic.signature = signature
         guard allowProbe && authorization == "fullAccess" else {
             diagnostic.readProbe = .init(status: .skipped, message: allowProbe ? "Full access is not already granted; no store read or prompt attempted" : "Setup does not probe the reminder store")
             return diagnostic

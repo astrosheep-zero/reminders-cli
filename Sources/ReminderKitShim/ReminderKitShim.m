@@ -51,58 +51,27 @@ BOOL RNRequestAuthorization(NSError **error) {
 // ABI-specific sends. A void return must never be passed through an object-return
 // function pointer under ARC. Scalars are NSInteger/NSUInteger, BOOL or double.
 static SEL Selector(const char *name) { return sel_registerName(name); }
-static id O(id target, const char *name) {
-    Required(target, [NSString stringWithUTF8String:name]);
-    return ((id (*)(id, SEL))objc_msgSend)(target, Selector(name));
-}
-static id O1(id target, const char *name, id a) {
-    Required(target, [NSString stringWithUTF8String:name]);
-    return ((id (*)(id, SEL, id))objc_msgSend)(target, Selector(name), a);
-}
-static id O2(id target, const char *name, id a, id b) {
-    Required(target, [NSString stringWithUTF8String:name]);
-    return ((id (*)(id, SEL, id, id))objc_msgSend)(target, Selector(name), a, b);
-}
-static id O3(id target, const char *name, id a, id b, id c) {
-    Required(target, [NSString stringWithUTF8String:name]);
-    return ((id (*)(id, SEL, id, id, id))objc_msgSend)(target, Selector(name), a, b, c);
-}
-static void V(id target, const char *name) {
-    Required(target, [NSString stringWithUTF8String:name]);
-    ((void (*)(id, SEL))objc_msgSend)(target, Selector(name));
-}
-static void V1(id target, const char *name, id a) {
-    Required(target, [NSString stringWithUTF8String:name]);
-    ((void (*)(id, SEL, id))objc_msgSend)(target, Selector(name), a);
-}
-static void V2(id target, const char *name, id a, id b) {
-    Required(target, [NSString stringWithUTF8String:name]);
-    ((void (*)(id, SEL, id, id))objc_msgSend)(target, Selector(name), a, b);
-}
-static NSInteger I(id target, const char *name) {
-    Required(target, [NSString stringWithUTF8String:name]);
-    return ((NSInteger (*)(id, SEL))objc_msgSend)(target, Selector(name));
-}
-static BOOL B(id target, const char *name) {
-    Required(target, [NSString stringWithUTF8String:name]);
-    return ((BOOL (*)(id, SEL))objc_msgSend)(target, Selector(name));
-}
-static double D(id target, const char *name) {
-    Required(target, [NSString stringWithUTF8String:name]);
-    return ((double (*)(id, SEL))objc_msgSend)(target, Selector(name));
-}
-static void SI(id target, const char *name, NSInteger value) {
-    Required(target, [NSString stringWithUTF8String:name]);
-    ((void (*)(id, SEL, NSInteger))objc_msgSend)(target, Selector(name), value);
-}
-static void SB(id target, const char *name, BOOL value) {
-    Required(target, [NSString stringWithUTF8String:name]);
-    ((void (*)(id, SEL, BOOL))objc_msgSend)(target, Selector(name), value);
-}
-static void SD(id target, const char *name, double value) {
-    Required(target, [NSString stringWithUTF8String:name]);
-    ((void (*)(id, SEL, double))objc_msgSend)(target, Selector(name), value);
-}
+// Generate the otherwise identical send fences, retaining an explicit C signature
+// for every wrapper. In particular void sends never go through an id-returning cast.
+#define RN_SEND(Name, Result, Parameters, Signature, Arguments) \
+    static Result Name Parameters { \
+        Required(target, [NSString stringWithUTF8String:name]); \
+        return ((Result (*) Signature)objc_msgSend) Arguments; \
+    }
+RN_SEND(O, id, (id target, const char *name), (id, SEL), (target, Selector(name)))
+RN_SEND(O1, id, (id target, const char *name, id a), (id, SEL, id), (target, Selector(name), a))
+RN_SEND(O2, id, (id target, const char *name, id a, id b), (id, SEL, id, id), (target, Selector(name), a, b))
+RN_SEND(O3, id, (id target, const char *name, id a, id b, id c), (id, SEL, id, id, id), (target, Selector(name), a, b, c))
+RN_SEND(V, void, (id target, const char *name), (id, SEL), (target, Selector(name)))
+RN_SEND(V1, void, (id target, const char *name, id a), (id, SEL, id), (target, Selector(name), a))
+RN_SEND(V2, void, (id target, const char *name, id a, id b), (id, SEL, id, id), (target, Selector(name), a, b))
+RN_SEND(I, NSInteger, (id target, const char *name), (id, SEL), (target, Selector(name)))
+RN_SEND(B, BOOL, (id target, const char *name), (id, SEL), (target, Selector(name)))
+RN_SEND(D, double, (id target, const char *name), (id, SEL), (target, Selector(name)))
+RN_SEND(SI, void, (id target, const char *name, NSInteger value), (id, SEL, NSInteger), (target, Selector(name), value))
+RN_SEND(SB, void, (id target, const char *name, BOOL value), (id, SEL, BOOL), (target, Selector(name), value))
+RN_SEND(SD, void, (id target, const char *name, double value), (id, SEL, double), (target, Selector(name), value))
+#undef RN_SEND
 static Class C(NSString *name) {
     Class cls = NSClassFromString(name);
     if (!cls) Refuse(RNErrorUnsupported, [@"Missing native class " stringByAppendingString:name]);
@@ -191,6 +160,22 @@ static NSDictionary *ColorValue(id value) {
     }, error);
     _activeCache = nil; _concealedCache = nil; _listsCache = nil;
     return result;
+}
+// Shared guarded save edges. Lookups and change construction stay inside the fence;
+// commit still owns the may-have-mutated marker and request-owned identity receipts.
+- (NSString *)creating:(id (^)(id request))body error:(NSError **)error {
+    return [self guard:^id {
+        id request = [self request];
+        NSString *identifier = Required(ObjectID(body(request)), @"Created object ID");
+        [self commit:request]; return identifier;
+    } error:error];
+}
+- (BOOL)updating:(id (^)(void))lookup selector:(const char *)selector apply:(void (^)(id object, id change, id request))body error:(NSError **)error {
+    return [self guard:^id {
+        id request = [self request], object = lookup();
+        body(object, Required(O1(request, selector, object), @"Native change item"), request);
+        [self commit:request]; return @YES;
+    } error:error] != nil;
 }
 - (id)request { return Required(O1([C(@"REMSaveRequest") alloc], "initWithStore:", _store), @"Save request"); }
 - (NSArray<NSString *> *)lastSavedReminderIDs { return _lastSavedReminderIDs ?: @[]; }
@@ -374,9 +359,6 @@ static NSDictionary *ColorValue(id value) {
 - (NSString *)defaultListWithError:(NSError **)error {
     return [self guard:^id { return ObjectID(Fetch(self->_store, "fetchDefaultListWithError:")); } error:error];
 }
-- (NSArray *)sectionsInList:(NSString *)listID error:(NSError **)error {
-    return [self guard:^id { return [self sectionValues:[self list:listID]]; } error:error];
-}
 
 static NSDictionary *RuleValue(id rule) {
     NSMutableDictionary *value = [@{@"frequency": @(I(rule, "frequency")), @"interval": @(I(rule, "interval"))} mutableCopy];
@@ -437,7 +419,7 @@ static NSDictionary *PlaceValue(id trigger) {
     if (siblings.count > 1) return @{@"id": siblings[1], @"after": @NO};
     return nil;
 }
-- (NSDictionary *)reminderValue:(id)reminder concealed:(BOOL)concealed {
+- (NSDictionary *)reminderValue:(id)reminder concealed:(BOOL)concealed imageBytes:(BOOL)imageBytes {
     NSMutableDictionary *result = [@{@"id": ObjectID(reminder), @"title": Required(O(reminder, "titleAsString"), @"Reminder title"),
         @"completed": @(B(reminder, "isCompleted")), @"flagged": @(I(reminder, "flagged")), @"priority": @(I(reminder, "priority"))} mutableCopy];
     Put(result, @"listID", ID(O(reminder, "listID")));
@@ -484,14 +466,17 @@ static NSDictionary *PlaceValue(id trigger) {
         for (id attachment in O(attachments, "urlAttachments") ?: @[]) [urls addObject:Required([O(attachment, "url") absoluteString], @"URL attachment")];
         for (id image in O(attachments, "imageAttachments") ?: @[]) {
             NSURL *url = Required(O(image, "fileURL"), @"Native image URL (image may not be downloaded)");
-            NSNumber *size = nil; NSError *fileError = nil;
-            if (![url getResourceValue:&size forKey:NSURLFileSizeKey error:&fileError]) Refuse(RNErrorBackend, fileError.localizedDescription ?: @"Image size unavailable");
-            if (size.unsignedLongLongValue > 16 * 1024 * 1024) Refuse(RNErrorUnsupported, @"Native image exceeds 16 MiB transport limit");
-            NSData *bytes = [NSData dataWithContentsOfURL:url options:0 error:&fileError];
-            NativeResult(bytes, fileError, @"Read native image attachment");
-            [images addObject:@{@"id": ObjectID(image), @"type": Required(O(image, "uti"), @"Image content type"),
-                @"width": @(I(image, "width")), @"height": @(I(image, "height")), @"size": @(bytes.length),
-                @"fileName": url.lastPathComponent, @"data": bytes, @"sourceURL": url}];
+            NSMutableDictionary *info = [@{@"id": ObjectID(image), @"type": Required(O(image, "uti"), @"Image content type"),
+                @"width": @(I(image, "width")), @"height": @(I(image, "height")), @"size": @(I(image, "fileSize")),
+                @"fileName": url.lastPathComponent, @"sourceURL": url} mutableCopy];
+            if (imageBytes) {
+                if ([info[@"size"] unsignedLongLongValue] > 16 * 1024 * 1024) Refuse(RNErrorUnsupported, @"Native image exceeds 16 MiB transport limit");
+                NSError *fileError = nil;
+                NSData *bytes = [NSData dataWithContentsOfURL:url options:0 error:&fileError];
+                NativeResult(bytes, fileError, @"Read native image attachment");
+                info[@"data"] = bytes; info[@"size"] = @(bytes.length);
+            }
+            [images addObject:info];
         }
     }
     result[@"urls"] = urls; result[@"images"] = images;
@@ -511,14 +496,14 @@ static NSDictionary *PlaceValue(id trigger) {
     Put(result, @"position", [self positionForReminder:reminder sectionID:sectionID]);
     return result;
 }
-- (id)reminder:(NSString *)identifier concealed:(BOOL)concealed error:(NSError **)error {
+- (id)reminder:(NSString *)identifier concealed:(BOOL)concealed imageBytes:(BOOL)imageBytes error:(NSError **)error {
     // NSNull means a successful by-ID miss; nil is exclusively failure.
     return [self guard:^id {
         id object = [self rawReminder:identifier concealed:concealed];
         if (!object) return NSNull.null;
         BOOL hidden = [self rawReminder:identifier concealed:NO] == nil || [self isConcealed:object];
         if (hidden != concealed) return NSNull.null;
-        return [self reminderValue:object concealed:concealed];
+        return [self reminderValue:object concealed:concealed imageBytes:imageBytes];
     } error:error];
 }
 - (NSArray *)remindersInList:(NSString *)listID error:(NSError **)error {
@@ -527,7 +512,7 @@ static NSDictionary *PlaceValue(id trigger) {
         for (id reminder in [self rawReminders:[self list:listID]]) {
             // Bridge list fetches omit early alerts. Fetch each ID with full options,
             // otherwise visible version tokens would omit an editable field.
-            [values addObject:[self reminderValue:[self existingReminder:ObjectID(reminder)] concealed:NO]];
+            [values addObject:[self reminderValue:[self existingReminder:ObjectID(reminder)] concealed:NO imageBytes:NO]];
         }
         return values;
     } error:error];
@@ -616,56 +601,41 @@ static NSDictionary *PlaceValue(id trigger) {
     }
 }
 - (NSString *)createList:(NSString *)name changes:(NSDictionary *)changes error:(NSError **)error {
-    return [self guard:^id {
-        id request = [self request], account = [self account];
+    return [self creating:^id(id request) {
+        id account = [self account];
         id change = Required(O3(request, "addListWithName:toAccountChangeItem:listObjectID:", name, O1(request, "updateAccount:", account), nil), @"Create list");
         [self applyList:changes change:change request:request account:account];
-        NSString *identifier = Required(ObjectID(change), @"Created list ID");
-        [self commit:request]; return identifier;
+        return change;
     } error:error];
 }
 - (BOOL)updateList:(NSString *)identifier changes:(NSDictionary *)changes error:(NSError **)error {
-    return [self guard:^id {
-        id list = [self list:identifier], request = [self request];
-        [self applyList:changes change:Required(O1(request, "updateList:", list), @"List change") request:request account:O(list, "account")];
-        [self commit:request]; return @YES;
-    } error:error] != nil;
+    return [self updating:^id { return [self list:identifier]; } selector:"updateList:" apply:^(id list, id change, id request) {
+        [self applyList:changes change:change request:request account:O(list, "account")];
+    } error:error];
 }
 - (BOOL)deleteList:(NSString *)identifier error:(NSError **)error {
-    return [self guard:^id {
-        id list = [self list:identifier], request = [self request];
-        V(O1(request, "updateList:", list), "removeFromParent");
-        [self commit:request]; return @YES;
-    } error:error] != nil;
+    return [self updating:^id { return [self list:identifier]; } selector:"updateList:" apply:^(id list, id change, id request) {
+        V(change, "removeFromParent");
+    } error:error];
 }
 - (NSString *)createGroup:(NSString *)name error:(NSError **)error {
-    return [self guard:^id {
-        id request = [self request];
-        id group = Required(O2(request, "addGroupWithName:toAccountGroupContextChangeItem:", name, O(O1(request, "updateAccount:", [self account]), "groupContext")), @"Create group");
-        NSString *identifier = Required(ObjectID(group), @"Created group ID");
-        [self commit:request]; return identifier;
+    return [self creating:^id(id request) {
+        return Required(O2(request, "addGroupWithName:toAccountGroupContextChangeItem:", name, O(O1(request, "updateAccount:", [self account]), "groupContext")), @"Create group");
     } error:error];
 }
 - (BOOL)renameGroup:(NSString *)identifier name:(NSString *)name error:(NSError **)error {
-    return [self guard:^id {
-        id group = [self group:identifier], request = [self request];
-        V1(O(O1(request, "updateList:", group), "storage"), "setName:", name);
-        [self commit:request]; return @YES;
-    } error:error] != nil;
+    return [self updating:^id { return [self group:identifier]; } selector:"updateList:" apply:^(id group, id change, id request) {
+        V1(O(change, "storage"), "setName:", name);
+    } error:error];
 }
 - (BOOL)deleteGroup:(NSString *)identifier error:(NSError **)error {
-    return [self guard:^id {
-        id group = [self group:identifier], request = [self request];
-        V(O1(request, "updateList:", group), "removeFromParent");
-        [self commit:request]; return @YES;
-    } error:error] != nil;
+    return [self updating:^id { return [self group:identifier]; } selector:"updateList:" apply:^(id group, id change, id request) {
+        V(change, "removeFromParent");
+    } error:error];
 }
 - (NSString *)createSection:(NSString *)name list:(NSString *)listID error:(NSError **)error {
-    return [self guard:^id {
-        id list = [self list:listID], request = [self request];
-        id section = Required(O2(request, "addListSectionWithDisplayName:toListSectionContextChangeItem:", name, O(O1(request, "updateList:", list), "sectionsContextChangeItem")), @"Create section");
-        NSString *identifier = Required(ObjectID(section), @"Created section ID");
-        [self commit:request]; return identifier;
+    return [self creating:^id(id request) {
+        return Required(O2(request, "addListSectionWithDisplayName:toListSectionContextChangeItem:", name, O(O1(request, "updateList:", [self list:listID]), "sectionsContextChangeItem")), @"Create section");
     } error:error];
 }
 - (BOOL)updateSection:(NSString *)identifier list:(NSString *)listID changes:(NSDictionary *)changes error:(NSError **)error {
@@ -688,11 +658,9 @@ static NSDictionary *PlaceValue(id trigger) {
     } error:error] != nil;
 }
 - (BOOL)deleteSection:(NSString *)identifier list:(NSString *)listID error:(NSError **)error {
-    return [self guard:^id {
-        id section = [self section:identifier list:[self list:listID]], request = [self request];
-        V(O1(request, "updateListSection:", section), "removeFromList");
-        [self commit:request]; return @YES;
-    } error:error] != nil;
+    return [self updating:^id { return [self section:identifier list:[self list:listID]]; } selector:"updateListSection:" apply:^(id section, id change, id request) {
+        V(change, "removeFromList");
+    } error:error];
 }
 - (void)applySmart:(NSDictionary *)fields change:(id)change {
     id context = Required(O(change, "customContext"), @"Custom smart-list context");
@@ -707,52 +675,41 @@ static NSDictionary *PlaceValue(id trigger) {
     }
 }
 - (NSString *)createSmartList:(NSString *)name changes:(NSDictionary *)changes error:(NSError **)error {
-    return [self guard:^id {
-        id request = [self request];
+    return [self creating:^id(id request) {
         id change = Required(O3(request, "addCustomSmartListWithName:toAccountChangeItem:smartListObjectID:", name, O1(request, "updateAccount:", [self account]), nil), @"Create smart list");
         [self applySmart:changes change:change];
-        NSString *identifier = Required(ObjectID(change), @"Created smart-list ID");
-        [self commit:request]; return identifier;
+        return change;
     } error:error];
 }
 - (BOOL)updateSmartList:(NSString *)identifier changes:(NSDictionary *)changes error:(NSError **)error {
-    return [self guard:^id {
-        id smart = [self find:identifier in:[self rawSmartLists]], request = [self request];
-        [self applySmart:changes change:O1(request, "updateSmartList:", smart)];
-        [self commit:request]; return @YES;
-    } error:error] != nil;
+    return [self updating:^id { return [self find:identifier in:[self rawSmartLists]]; } selector:"updateSmartList:" apply:^(id smart, id change, id request) {
+        [self applySmart:changes change:change];
+    } error:error];
 }
 - (BOOL)deleteSmartList:(NSString *)identifier error:(NSError **)error {
-    return [self guard:^id {
-        id smart = [self find:identifier in:[self rawSmartLists]], request = [self request];
-        V1(O1(request, "updateSmartList:", smart), "removeFromParentWithAccountChangeItem:", O1(request, "updateAccount:", Required(O(smart, "account"), @"Smart-list account")));
-        [self commit:request]; return @YES;
-    } error:error] != nil;
+    return [self updating:^id { return [self find:identifier in:[self rawSmartLists]]; } selector:"updateSmartList:" apply:^(id smart, id change, id request) {
+        V1(change, "removeFromParentWithAccountChangeItem:", O1(request, "updateAccount:", Required(O(smart, "account"), @"Smart-list account")));
+    } error:error];
 }
 - (NSString *)createTemplate:(NSString *)name list:(NSString *)listID includeCompleted:(BOOL)completed error:(NSError **)error {
-    return [self guard:^id {
-        id list = [self list:listID], request = [self request];
+    return [self creating:^id(id request) {
+        id list = [self list:listID];
         id configuration = Required(((id (*)(id, SEL, id, BOOL))objc_msgSend)([C(@"REMTemplateConfiguration") alloc], Selector("initWithSourceListID:shouldSaveCompleted:"), O(list, "objectID"), completed), @"Template configuration");
-        id item = Required(O3(request, "addTemplateWithName:configuration:toAccountChangeItem:", name, configuration, O1(request, "updateAccount:", O(list, "account"))), @"Create template");
-        NSString *identifier = Required(ObjectID(item), @"Created template ID");
-        [self commit:request]; return identifier;
+        return Required(O3(request, "addTemplateWithName:configuration:toAccountChangeItem:", name, configuration, O1(request, "updateAccount:", O(list, "account"))), @"Create template");
     } error:error];
 }
 - (NSString *)useTemplate:(NSString *)identifier name:(NSString *)name error:(NSError **)error {
-    return [self guard:^id {
-        id item = [self find:identifier in:[self rawTemplates]], request = [self request];
+    return [self creating:^id(id request) {
+        id item = [self find:identifier in:[self rawTemplates]];
         id change = Required(O2(request, "addListUsingTemplate:toAccountChangeItem:", item, O1(request, "updateAccount:", [self account])), @"Instantiate template");
         if (name) V1(O(change, "storage"), "setName:", name);
-        NSString *created = Required(ObjectID(change), @"Instantiated list ID");
-        [self commit:request]; return created;
+        return change;
     } error:error];
 }
 - (BOOL)deleteTemplate:(NSString *)identifier error:(NSError **)error {
-    return [self guard:^id {
-        id item = [self find:identifier in:[self rawTemplates]], request = [self request];
-        V(O1(request, "updateTemplate:", item), "removeFromParentAccount");
-        [self commit:request]; return @YES;
-    } error:error] != nil;
+    return [self updating:^id { return [self find:identifier in:[self rawTemplates]]; } selector:"updateTemplate:" apply:^(id item, id change, id request) {
+        V(change, "removeFromParentAccount");
+    } error:error];
 }
 
 - (void)setSection:(id)sectionID change:(id)change list:(id)list request:(id)request {
@@ -891,12 +848,11 @@ static NSDictionary *PlaceValue(id trigger) {
     }
 }
 - (NSString *)createReminderInList:(NSString *)listID title:(NSString *)title changes:(NSDictionary *)changes error:(NSError **)error {
-    return [self guard:^id {
-        id list = [self list:listID], request = [self request];
+    return [self creating:^id(id request) {
+        id list = [self list:listID];
         id change = Required(O2(request, "addReminderWithTitle:toListChangeItem:", title, O1(request, "updateList:", list)), @"Create reminder");
         [self applyReminder:changes change:change list:list request:request];
-        NSString *identifier = Required(ObjectID(change), @"Created reminder ID");
-        [self commit:request]; return identifier;
+        return change;
     } error:error];
 }
 - (BOOL)updateReminder:(NSString *)identifier changes:(NSDictionary *)changes error:(NSError **)error {
@@ -918,14 +874,17 @@ static NSDictionary *PlaceValue(id trigger) {
         if (identifiers.count) [self commit:request]; return @YES;
     } error:error] != nil;
 }
-- (BOOL)restoreReminders:(NSArray<NSString *> *)identifiers toList:(NSString *)listID error:(NSError **)error {
+- (BOOL)restoreReminders:(NSArray<NSString *> *)identifiers toList:(NSString *)listID parentID:(NSString *)expectedParentID error:(NSError **)error {
     return [self guard:^id {
         id list = [self list:listID], request = [self request];
         if (!identifiers.count) Refuse(RNErrorInvalidInput, @"Restore requires a root ID");
         NSString *rootID = identifiers.firstObject;
         id root = [self rawReminder:rootID concealed:YES];
         if (!root || ([self rawReminder:rootID concealed:NO] != nil && ![self isConcealed:root])) Refuse(RNErrorNotFound, @"Restorable reminder not found");
-        NSString *parentID = ID(O(root, "parentReminderID"));
+        NSString *nativeParentID = ID(O(root, "parentReminderID"));
+        if (nativeParentID && expectedParentID && !SameID(nativeParentID, expectedParentID))
+            Refuse(RNErrorInvalidInput, @"Deleted reminder parent differs from journal evidence");
+        NSString *parentID = nativeParentID ?: expectedParentID;
         id parent = parentID ? [self existingReminder:parentID] : nil;
         if (parent && (!SameID(ID(O(parent, "listID")), listID) || O(parent, "parentReminderID") || identifiers.count > 1))
             Refuse(RNErrorInvalidInput, @"Restored subtask needs an active top-level parent in the target list and no children");
@@ -933,15 +892,49 @@ static NSDictionary *PlaceValue(id trigger) {
         for (NSString *identifier in [identifiers subarrayWithRange:NSMakeRange(1, identifiers.count - 1)]) {
             if ([seen containsObject:identifier.uppercaseString]) Refuse(RNErrorInvalidInput, @"Duplicate restore ID");
             [seen addObject:identifier.uppercaseString];
-            // Deleted children can retain an obsolete listID. Fetch including
-            // marked-for-delete and explicitly move their storage in this save.
+            // Deleted children can retain an obsolete listID and lose their visible
+            // parent pointer. Journal/root evidence supplies membership; only a
+            // contradictory surviving pointer is a definite pre-save refusal.
             id child = Fetch1(self->_store, "fetchReminderIncludingMarkedForDeleteWithObjectID:error:", [self reminderObjectID:identifier]);
-            if (!SameID(ID(O(child, "parentReminderID")), rootID)) Refuse(RNErrorInvalidInput, @"Known child no longer belongs to the restored root");
+            NSString *childParentID = ID(O(child, "parentReminderID"));
+            if (childParentID && !SameID(childParentID, rootID)) Refuse(RNErrorInvalidInput, @"Known child now belongs to a different parent");
             V1(O1(request, "updateReminder:", child), "setListID:", O(list, "objectID"));
         }
         V1(O1(request, "updateList:", list), "undeleteRemindersWithoutUndoWithIDs:", @[[self reminderObjectID:rootID]]);
         if (parent) V1(O(O1(request, "updateReminder:", parent), "subtaskContext"), "addReminderChangeItem:", O1(request, "updateReminder:", root));
-        [self commit:request]; return @YES;
+        [self commit:request];
+        NSMutableSet *receipt = [NSMutableSet setWithArray:_lastSavedReminderIDs];
+        _activeCache = [NSMutableDictionary dictionary];
+        id repair = nil;
+        id restoredRoot = [self existingReminder:rootID];
+        if (parentID) {
+            NSString *restoredParentID = ID(O(restoredRoot, "parentReminderID"));
+            if (restoredParentID) {
+                if (!SameID(restoredParentID, parentID)) Refuse(RNErrorBackend, @"Restored root belongs to a different parent");
+            } else {
+                // A deleted root can lose its parent pointer too. Journal evidence
+                // supplies the already validated active parent for conditional repair.
+                if (!repair) repair = [self request];
+                id restoredParent = [self existingReminder:parentID];
+                V1(O(O1(repair, "updateReminder:", restoredParent), "subtaskContext"), "addReminderChangeItem:", O1(repair, "updateReminder:", restoredRoot));
+            }
+        }
+        for (NSString *identifier in [identifiers subarrayWithRange:NSMakeRange(1, identifiers.count - 1)]) {
+            id child = [self existingReminder:identifier];
+            NSString *childParentID = ID(O(child, "parentReminderID"));
+            if (childParentID) {
+                if (!SameID(childParentID, rootID)) Refuse(RNErrorBackend, @"Restored child belongs to a different parent");
+                continue;
+            }
+            // Native recovery can leave a child top-level. Reparent only then,
+            // batching every missing link into one conditional follow-up save.
+            if (!repair) repair = [self request];
+            V1(O(O1(repair, "updateReminder:", restoredRoot), "subtaskContext"), "addReminderChangeItem:", O1(repair, "updateReminder:", child));
+        }
+        if (repair) [self commit:repair];
+        [receipt addObjectsFromArray:_lastSavedReminderIDs];
+        _lastSavedReminderIDs = [receipt.allObjects sortedArrayUsingSelector:@selector(compare:)];
+        return @YES;
     } error:error] != nil;
 }
 - (NSNumber *)replaceTag:(NSString *)name replacement:(NSString *)replacement error:(NSError **)error {

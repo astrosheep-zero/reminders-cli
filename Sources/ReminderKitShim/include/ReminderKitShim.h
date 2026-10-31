@@ -29,9 +29,9 @@ FOUNDATION_EXPORT BOOL RNPreflight(NSArray<NSString *> *features, NSError **erro
 - (nullable NSString *)defaultListWithError:(NSError **)error;
 - (BOOL)validateRecoveryForList:(NSString *)listID error:(NSError **)error;
 - (BOOL)validateSmartListCreationWithError:(NSError **)error;
-- (nullable NSArray<NSDictionary<NSString *, id> *> *)sectionsInList:(NSString *)listID error:(NSError **)error;
 /// Successful miss returns NSNull; all failures return nil plus error.
-- (nullable id)reminder:(NSString *)identifier concealed:(BOOL)concealed error:(NSError **)error;
+/// imageBytes is NO for ordinary reads and post-save confirmation; only explicit image reads pass YES.
+- (nullable id)reminder:(NSString *)identifier concealed:(BOOL)concealed imageBytes:(BOOL)imageBytes error:(NSError **)error;
 - (nullable NSArray<NSDictionary<NSString *, id> *> *)remindersInList:(NSString *)listID error:(NSError **)error;
 - (nullable NSArray<NSDictionary<NSString *, id> *> *)smartListsWithError:(NSError **)error;
 - (nullable NSArray<NSString *> *)contentsOfSmartList:(NSString *)identifier includeCompleted:(BOOL)completed error:(NSError **)error;
@@ -40,7 +40,7 @@ FOUNDATION_EXPORT BOOL RNPreflight(NSArray<NSString *> *features, NSError **erro
 - (nullable NSString *)createReminderInList:(NSString *)listID title:(NSString *)title changes:(NSDictionary *)changes error:(NSError **)error;
 - (BOOL)updateReminder:(NSString *)identifier changes:(NSDictionary *)changes error:(NSError **)error;
 - (BOOL)softDeleteReminders:(NSArray<NSString *> *)identifiers error:(NSError **)error;
-- (BOOL)restoreReminders:(NSArray<NSString *> *)identifiers toList:(NSString *)listID error:(NSError **)error;
+- (BOOL)restoreReminders:(NSArray<NSString *> *)identifiers toList:(NSString *)listID parentID:(nullable NSString *)parentID error:(NSError **)error;
 - (nullable NSString *)createList:(NSString *)name changes:(NSDictionary *)changes error:(NSError **)error;
 - (BOOL)updateList:(NSString *)identifier changes:(NSDictionary *)changes error:(NSError **)error;
 - (BOOL)deleteList:(NSString *)identifier error:(NSError **)error;

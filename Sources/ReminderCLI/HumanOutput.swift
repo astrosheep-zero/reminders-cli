@@ -1,4 +1,16 @@
 import Foundation
+import ReminderFacade
+
+extension OutputEnvelope {
+    func text() throws -> String {
+        let notes = warnings.map { "warning: \($0)\n" }.joined()
+        if let error {
+            let affected = error.affectedIDs.isEmpty ? "" : "affectedIDs: \(error.affectedIDs.joined(separator: ", "))\n"
+            return "\(status.rawValue): \(error.code.rawValue): \(error.message)\n" + affected + notes
+        }
+        return (result.map(HumanOutput.render) ?? "ok\n") + notes
+    }
+}
 
 enum HumanOutput {
     static func render(_ result: JSONValue) -> String {
@@ -64,10 +76,10 @@ enum HumanOutput {
         return line.trimmingCharacters(in: .whitespaces)
     }
     private static func date(_ value: JSONValue) -> String {
-        let tag = value.object, timed = tag["localDateTime"]?.object
-        let data = timed ?? tag["date"]?.object ?? [:], day = data["_0"]?.object ?? [:]
+        let data = value.object, timed = data["kind"]?.string == "localDateTime"
+        let day = data["value"]?.object ?? [:]
         var text = String(format: "%04d-%02d-%02d", day["year"]?.integer ?? 0, day["month"]?.integer ?? 0, day["day"]?.integer ?? 0)
-        if timed != nil { text += String(format: "T%02d:%02d:%02d", data["hour"]?.integer ?? 0, data["minute"]?.integer ?? 0, data["second"]?.integer ?? 0) }
+        if timed { text += String(format: "T%02d:%02d:%02d", data["hour"]?.integer ?? 0, data["minute"]?.integer ?? 0, data["second"]?.integer ?? 0) }
         return text
     }
 }
