@@ -35,7 +35,7 @@ public struct WorkerComposition {
 }
 
 public enum BuildIdentity {
-    public static var version: String { (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "0.1.0" }
+    public static var version: String { (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "0.1.1" }
     /// Runtime resolves this exact same executable. Development identity is deterministic, not a signing identity.
     public static var current: String {
         (Bundle.main.object(forInfoDictionaryKey: "ReminderBuildID") as? String) ?? "reminders-poc-development-v1"

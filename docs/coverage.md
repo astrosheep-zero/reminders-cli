@@ -44,7 +44,7 @@ A missing selector/account capability is explicit `unsupported`, never fabricate
 |---|---|
 | `swift build` | Pass; executable/Swift/C/Objective-C modules compile, no distribution signing script |
 | `bash scripts/test.sh` | **110 passed**: Runtime 13, Native 36, Core 33, CLI/facade/MCP 28 |
-| Official SDK client/server | Initialize 2025-11-25, version 0.1.0, complete tool list, real facade/Core/Runtime calls, structured + text output, wrong/corrupt/contradictory final results |
+| Official SDK client/server | Initialize 2025-11-25, version 0.1.1, complete tool list, real facade/Core/Runtime calls, structured + text output, wrong/corrupt/contradictory final results |
 | Actual `reminder mcp` stdio executable | Initialize/list/invalid arguments/EOF exit, without Native access |
 | Cancellation | Task/SDK notification propagation; pre/post-marker classification; pending cancellation and shutdown do not spawn; active worker reaped; SDK ping remains responsive |
 | Shared schemas | All 36 tool descriptors have typed dispatch tests; unknown/null/internal-enum/nested fields and missing replacement fields refuse; stable output/version/opaque read preservation |

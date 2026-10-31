@@ -13,6 +13,8 @@ reminder setup
 
 The tap builds from source and installs `Reminder.app` inside the formula's `libexec` directory. The `reminder` command is an exec wrapper that keeps the executable inside its application bundle. Installation does not launch the app, request Reminders access, or change keychains. Run `setup` yourself to request full Reminders access. Normal commands refuse when access is missing.
 
+The build script forwards its arguments to `swift build`. The formula passes `--disable-sandbox` because SwiftPM cannot nest its sandbox inside Homebrew’s build sandbox; the outer Homebrew sandbox remains active.
+
 Homebrew builds use ad-hoc signing. They are not Developer ID signed or notarized, and upgrades may require granting access again. For a persistent signing identity, use the source build below with an existing certificate. The tool does not create or install signing certificates.
 
 ## Build from source

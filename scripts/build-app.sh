@@ -5,8 +5,8 @@ cd "$(dirname "$0")/.."
 [[ "$(uname -s)" == Darwin && "$(uname -m)" == arm64 ]] || {
     echo 'Requires macOS 26+ on Apple silicon.' >&2; exit 1;
 }
-swift build -c release
-bin_dir="$(swift build -c release --show-bin-path)"
+swift build -c release "$@"
+bin_dir="$(swift build -c release "$@" --show-bin-path)"
 [[ ! -L dist && ! -L dist/reminder ]] || {
     echo 'Refusing symlinked distribution directory or wrapper.' >&2; exit 1;
 }
