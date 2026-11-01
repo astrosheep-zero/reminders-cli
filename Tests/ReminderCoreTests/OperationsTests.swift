@@ -624,6 +624,49 @@ struct OperationsTests {
             #expect(try Data(contentsOf: url) == before)
         }
     }
+    @Test func sparseSectionEditResolvesWithinListAndMutatesOnce() throws {
+        try fixture { backend, url in
+            backend.data.sections.append(Section(id: "OTHER", name: "First", listID: "L2"))
+            let engine = Operations(backend: backend, journalURL: url)
+            let rename = SectionPatch(name: "Renamed"), order = SectionPatch(position: .before("Second"))
+            let both = SectionPatch(name: "Renamed", position: .after("Second"))
+            for (patch, normalized) in [(rename, rename), (order, SectionPatch(position: .before("S2"))),
+                (both, SectionPatch(name: "Renamed", position: .after("S2")))] {
+                let count = backend.mutationCalls
+                #expect(engine.execute(.section(.update(list: "Inbox", section: "s1", patch: patch))).status == .ok)
+                #expect(backend.mutationCalls == count + 1)
+                #expect(backend.actions.last == .section(.update(list: "L1", section: "S1", patch: normalized)))
+            }
+            #expect(backend.sectionLists == ["L1", "L1", "L1"])
+            backend.mutationError = Failure(.backend, "Save failed")
+            let result = engine.execute(.section(.update(list: "Inbox", section: "First", patch: both)))
+            #expect(result.status == .unknown); #expect(result.error?.underlyingCode == .backend)
+            #expect(backend.mutationCalls == 4) // Never retry an uncertain edit.
+        }
+    }
+    @Test func invalidSectionEditsNeverEnterMutation() throws {
+        try fixture { backend, url in
+            let engine = Operations(backend: backend, journalURL: url)
+            func edit(_ section: String = "First", list: String = "Inbox", patch: SectionPatch) -> ExecutionResult {
+                engine.execute(.section(.update(list: list, section: section, patch: patch)))
+            }
+            #expect(edit(patch: SectionPatch()).error?.code == .invalidInput)
+            #expect(edit(patch: SectionPatch(name: " ")).error?.code == .invalidInput)
+            #expect(edit(patch: SectionPatch(name: "N", position: .after("s1"))).error?.code == .invalidInput)
+            #expect(edit(patch: SectionPatch(name: "N", position: .before("missing"))).error?.code == .notFound)
+            #expect(edit("missing", patch: SectionPatch(name: "N")).error?.code == .notFound)
+            #expect(edit(list: "missing", patch: SectionPatch(name: "N")).error?.code == .notFound)
+            backend.data.sections.append(Section(id: "OTHER", name: "Elsewhere", listID: "L2"))
+            #expect(edit(patch: SectionPatch(name: "N", position: .after("OTHER"))).error?.code == .notFound)
+            backend.data.sections.append(Section(id: "S3", name: "Second", listID: "L1"))
+            #expect(edit(patch: SectionPatch(name: "N", position: .after("Second"))).error?.code == .ambiguous)
+            backend.data.sections.append(Section(id: "S4", name: "First", listID: "L1"))
+            #expect(edit(patch: SectionPatch(name: "N")).error?.code == .ambiguous)
+            backend.data.lists.append(ReminderList(id: "L3", fields: ListFields(name: "Inbox")))
+            #expect(edit(patch: SectionPatch(name: "N")).error?.code == .ambiguous)
+            #expect(backend.mutationCalls == 0)
+        }
+    }
     @Test func testContainerFamiliesRouteTypedIDsAndRequireConfirmation() throws {
         try fixture { (backend: MemoryBackend, url: URL) throws in
             backend.items = [:]
@@ -632,8 +675,8 @@ struct OperationsTests {
                 .list(.create(ListFields(name: "New"))), .list(.update("Inbox", { var p = ListPatch(); p.name = "Renamed"; return p }())),
                 .list(.clearCompleted("Inbox", confirmed: true)), .list(.delete("Work", confirmed: true)),
                 .group(.create("G")), .group(.rename("Group", name: "G")), .group(.delete("Group", confirmed: true)),
-                .section(.create(list: "Inbox", name: "S")), .section(.rename(list: "Inbox", section: "First", name: "N")),
-                .section(.move(list: "Inbox", section: "First", position: .after("Second"))),
+                .section(.create(list: "Inbox", name: "S")),
+                .section(.update(list: "Inbox", section: "First", patch: SectionPatch(name: "N", position: .after("Second")))),
                 .section(.delete(list: "Inbox", section: "First", confirmed: true)),
                 .tag(.rename("work", name: "home")), .tag(.delete("work", confirmed: true)),
                 .smartList(.create(SmartList(id: "", name: "New", filters: [.flagged(true)]))),
@@ -643,7 +686,7 @@ struct OperationsTests {
             ]
             for command in commands { #expect(engine.execute(command).status == .ok, "\(command)") }
             #expect(backend.actions.count + backend.listUpdates.count == commands.count - 1) // empty clear-completed has no native save
-            #expect(backend.actions.contains(.section(.move(list: "L1", section: "S1", position: .after("S2")))))
+            #expect(backend.actions.contains(.section(.update(list: "L1", section: "S1", patch: SectionPatch(name: "N", position: .after("S2"))))))
             #expect(backend.actions.contains(.template(.create(name: "Saved", list: "L1", includeCompleted: true))))
             let count = backend.mutationCalls
             for command: Command in [.list(.delete("Inbox", confirmed: false)), .group(.delete("Group", confirmed: false)),

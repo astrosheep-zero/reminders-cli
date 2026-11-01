@@ -59,8 +59,7 @@ struct ParserTests {
             ["lists", "delete", "L", "--yes"], ["lists", "clear-completed", "L", "--yes"],
             ["groups"], ["groups", "add", "Work"], ["groups", "rename", "G", "--name", "New"], ["groups", "delete", "G", "--yes"],
             ["sections", "--list", "L"], ["sections", "add", "A", "--list", "L"],
-            ["sections", "rename", "S", "--list", "L", "--name", "B"],
-            ["sections", "move", "S", "--list", "L", "--position-json", #"{"kind":"before","value":"other"}"#],
+            ["sections", "edit", "S", "--list", "L", "--set-json", #"{"name":"B","position":{"kind":"before","value":"other"}}"#],
             ["sections", "delete", "S", "--list", "L", "--yes"],
             ["tags"], ["tags", "rename", "old", "--name", "new"], ["tags", "delete", "old", "--yes"],
             ["smart-lists"], ["smart-lists", "add", "A", "--definition-json", "{}"],
@@ -75,6 +74,13 @@ struct ParserTests {
                 #expect(throws: Failure.self) { try command(sample.filter { $0 != "--yes" }) }
             }
         }
+    }
+    @Test func sectionEditParsesSparseNameOrderAndCombinedChanges() throws {
+        #expect(try command(["sections", "edit", "S", "--list", "L", "--set-json", #"{"name":"B"}"#]) == .section(.update(list: "L", section: "S", patch: SectionPatch(name: "B"))))
+        #expect(try command(["sections", "edit", "S", "--list", "L", "--set-json", #"{"position":{"kind":"before","value":"A"}}"#]) == .section(.update(list: "L", section: "S", patch: SectionPatch(position: .before("A")))))
+        #expect(try command(["sections", "edit", "S", "--list", "L", "--set-json", #"{"name":"B","position":{"kind":"after","value":"A"}}"#]) == .section(.update(list: "L", section: "S", patch: SectionPatch(name: "B", position: .after("A")))))
+        #expect(throws: Failure.self) { try command(["sections", "edit", "S", "--set-json", #"{"name":"B"}"#]) }
+        #expect(throws: Failure.self) { try command(["sections", "edit", "S", "--list", "L", "--set-json", "{}"]) }
     }
     @Test func reminderActionsAndLiteralArguments() throws {
         #expect(try command(["show", "--", "--json"]) == .show("--json"))

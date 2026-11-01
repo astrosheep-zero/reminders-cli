@@ -16,7 +16,7 @@ Each worker still handles exactly one request. Build identity checks, required d
 
 The SDK negotiates MCP **2025-11-25**, advertises tools only and registers `tools/list` and `tools/call`. Server version follows `CFBundleShortVersionString`, with development fallback `0.1.1`. There are no permission-requesting resources or prompts. The fixed tool list is a single page; an unknown cursor is rejected.
 
-There are **36 tools**, with typed object schemas, required properties, closed nested objects, enum/variant alternatives, descriptions and conservative read-only/destructive/idempotency annotations:
+There are **35 tools**, with typed object schemas, required properties, closed nested objects, enum/variant alternatives, descriptions and conservative read-only/destructive/idempotency annotations:
 
 | Family | Tool names |
 |---|---|
@@ -25,7 +25,7 @@ There are **36 tools**, with typed object schemas, required properties, closed n
 | Catalog | `catalog`, `lists`, `groups`, `sections`, `tags`, `smart_lists`, `templates` |
 | Lists | `lists_add`, `lists_edit`, `lists_delete`, `lists_clear_completed` |
 | Groups | `groups_add`, `groups_rename`, `groups_delete` |
-| Sections | `sections_add`, `sections_rename`, `sections_move`, `sections_delete` |
+| Sections | `sections_add`, `sections_edit`, `sections_delete` |
 | Tags | `tags_rename`, `tags_delete` |
 | Smart lists | `smart_lists_add`, `smart_lists_edit`, `smart_lists_delete` |
 | Templates | `templates_add`, `templates_use`, `templates_delete` |
@@ -88,12 +88,14 @@ Date filters also model `none`. Relative ranges require nonnegative counts, exac
 | List edit | `id`, optional sparse `fields`, optional `clear:["color","icon","groupID"]`; at least one change |
 | Smart-list edit | `id`, full `definition` (`id`, `name`, `match`, `filters` required) |
 | Group/tag rename | `id`, `name` (tag `id` is a name resolved by native label matching) |
-| Section rename/move | `id`, `list`, plus `name` or tagged `position` respectively |
+| Section edit | `id`, `list`, nonempty `set:{name?,position?}`; tagged before/after position; no clear/null |
 | Container delete / clear-completed | `id`, `confirmed:true`; sections also require `list` |
 | Template use | `id`, optional `name` for the new list |
 | Other listings / `catalog` / `doctor` / `deleted` | Empty object |
 
 Reminder `fields`/`set` keys: `title`, `listID`, `notes`, `due`, `start`, `recurrence`, `earlyAlerts`, `location`, `contact`, `url`, `priority`, `flagged`, `urgent`, `completed`, `tags`, `parentID`, `sectionID`, `position`, `assigneeID`. Priority is `none/low/medium/high`; flags are booleans and tags are string arrays. Creation fields overlay Core defaults but cannot change the positional title or conflict with an explicitly supplied top-level `list`. If top-level `list` is omitted, `fields.listID` is allowed; an empty listID passes unchanged to Core for parent-list inheritance or unique-default selection. Edit sets preserve false/empty string/empty array; `clear` is an array of field names, disjoint from `set`. Missing fields remain absent. List edits merge supplied fields over the current list in Core: omitted color/icon/group/pin/kind/sort/name remain unchanged, false is a real update, and only explicit `clear` removes optional color/icon/groupID. Duplicate or conflicting fields/clear, nulls and empty edits fail. Position omission is always a write-only no-ordering directive, never replayed from an old snapshot. Core validates the merged fields and resolves grouping/neighbor names before entering the backend; this is optimistic read/merge/save, not cross-device CAS.
+
+Section edit uses `sections edit ID --list LIST --set-json JSON` on CLI and `sections_edit` on MCP. Name-only, order-only and combined changes share one sparse typed patch and one native update/save. Omitted attributes are not resent. Core resolves target and optional neighbor in the required list context and rejects self/unknown/ambiguous references before mutation; empty sets, nulls and clear fields fail validation. Section read output is unchanged; there are no rename/move aliases.
 
 CLI `--query-json` is a shorthand for the same top-level fields. Supplying a field in both JSON and a flag fails regardless of order. All fields have kebab-case flags; arrays use `--tags-json` and `--exclude-tags-json`, `--include-completed` is a switch, and other boolean filters take literal `true` or `false`.
 
@@ -108,7 +110,7 @@ Examples of `tools/call` arguments:
 ```json
 {"name":"add","arguments":{"title":"Buy fish","list":"Inbox","fields":{"due":{"kind":"date","value":{"year":2030,"month":2,"day":3}}}}}
 {"name":"edit","arguments":{"id":"REMINDER_ID","version":"VERSION","set":{"flagged":false,"notes":""},"clear":["due"]}}
-{"name":"sections_move","arguments":{"id":"SECTION_ID","list":"LIST_ID","position":{"kind":"after","value":"OTHER_SECTION_ID"}}}
+{"name":"sections_edit","arguments":{"id":"SECTION_ID","list":"LIST_ID","set":{"name":"Later","position":{"kind":"after","value":"OTHER_SECTION_ID"}}}}
 {"name":"lists_edit","arguments":{"id":"LIST_ID","fields":{"name":"Renamed"}}}
 {"name":"lists_edit","arguments":{"id":"LIST_ID","fields":{"pinned":false},"clear":["icon","groupID"]}}
 {"name":"find","arguments":{"text":"fish","tags":["work","home"],"excludeTags":["blocked"],"tagMatch":"any"}}
@@ -147,5 +149,7 @@ A cancellation before possible mutation is a definite pre-mutation failure. Afte
 `Package.swift` pins the official SDK tag 0.12.1 (`a0ae212ebf6eab5f754c3129608bc5557637e605`). Integration was checked against its README and actual `Server.swift`, `Tools.swift`, `Client.swift`, `StdioTransport.swift`, `InMemoryTransport.swift` and lifecycle/cancellation APIs. The SDK owns initialize/version negotiation, framing, request handling and cancellation notifications. Its server stop does not itself reap application workers, so facade shutdown explicitly owns that responsibility.
 
 Offline tests use the official SDK client/server and transports, a genuine stdio executable for initialize/list/invalid-call/EOF, and injected one-shot subprocesses running the actual facade/Core/Runtime composition for success, lost/corrupt/wrong/contradictory results, cancellation and queued cancellation. These are not simulated old API shims. No native store, setup, signing, keychain operation or live mutation is part of these tests.
+
+The section-edit lane passed 152 offline tests on 2026-11-01 with the explicit Swift Testing macro-plugin command in its Contract and a clean `git diff --check`. Focused parser/facade/Core/native-adapter coverage exercises sparse name/order/both, list-local resolution, invalid inputs and uncertainty without retries. A bridge double records exactly one combined `updateSection` call; this does not establish live save or cross-device delivery for the new interface.
 
 Collections 1.6.0 and all resolved manifests support the advertised Swift 6.2 floor; unrestricted Collections 1.7.5 would require 6.4. Verification ran on the installed Swift 6.4.2 compiler, not an independently installed 6.2 compiler. A real Swift 6.2 toolchain build remains unverified. Prior broad signed-native evidence belongs to the older build identified in [coverage](coverage.md). A subsequent signed Release build passed the focused CLI/MCP live regression recorded there; it does not establish every native/account capability or resolve explicit image-byte access.

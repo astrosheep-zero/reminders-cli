@@ -111,8 +111,10 @@ public enum FacadeOperations {
         .init("groups delete", .replacing, "id", ["id": .string, "confirmed": .bool], required: "confirmed", "Delete empty group only; confirmed must be true.") { .operation(.group(.delete($0.id, confirmed: true))) },
         .init("sections", .read, "", ["list": .string], "Read sections, optionally scoped by list ID or exact name.") { .operation(.catalog(.sections, list: $0.text("list"))) },
         .init("sections add", .additive, "name", ["name": .string, "list": .string], required: "list", "Create section in list.") { .operation(.section(.create(list: $0.list, name: $0.name))) },
-        .init("sections rename", .replacing, "id", ["id": .string, "list": .string, "name": .string], required: "list name", "Rename section in list.") { .operation(.section(.rename(list: $0.list, section: $0.id, name: $0.name))) },
-        .init("sections move", .replacing, "id", ["id": .string, "list": .string, "position": Shapes.position], required: "list position", "Move section before/after a distinct neighbor in same list.") { try .operation(.section(.move(list: $0.list, section: $0.id, position: $0.decode(Position.self, "position")))) },
+        .init("sections edit", .replacing, "id", ["id": .string, "list": .string, "set": .fields(["name": .string, "position": Shapes.position])], required: "list set", "Sparse section edit: rename and/or order before/after a distinct neighbor in the same list, in one save.") { a in
+            let patch = try a.decode(SectionPatch.self, "set"); try patch.validate()
+            return .operation(.section(.update(list: a.list, section: a.id, patch: patch)))
+        },
         .init("sections delete", .replacing, "id", ["id": .string, "list": .string, "confirmed": .bool], required: "list confirmed", "Delete section in list; confirmed must be true.") { .operation(.section(.delete(list: $0.list, section: $0.id, confirmed: true))) },
         .init("tags", .read, "", [:], "Read native tag labels with open/total counts from their selected reminders.") { _ in .operation(.catalog(.tags)) },
         .init("tags rename", .replacing, "id", ["id": .string, "name": .string], required: "name", "Rename a native-matched tag and report affected reminder receipts.") { .operation(.tag(.rename($0.id, name: $0.name))) },

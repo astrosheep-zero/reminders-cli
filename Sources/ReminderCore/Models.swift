@@ -309,6 +309,16 @@ public struct NamedEntity: Codable, Sendable, Equatable {
         self.id = id; self.name = name; self.color = color; self.icon = icon
     }
 }
+/// Only supplied attributes are changed; position is a write-only directive.
+public struct SectionPatch: Codable, Sendable, Equatable {
+    public var name: String?
+    public var position: Position?
+    public init(name: String? = nil, position: Position? = nil) { self.name = name; self.position = position }
+    public func validate() throws {
+        guard name != nil || position != nil else { throw Failure(.invalidInput, "Section edit requires a change") }
+        if let name { try Validation.name(name) }
+    }
+}
 public struct Section: Codable, Sendable, Equatable {
     public var id: String
     public var name: String

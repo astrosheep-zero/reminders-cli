@@ -399,17 +399,20 @@ public final class Operations: @unchecked Sendable {
     }
     private func section(_ input: SectionAction) throws -> OperationResult {
         let list: String
-        switch input { case .create(let value, _), .rename(let value, _, _), .move(let value, _, _), .delete(let value, _, _): list = value }
+        switch input { case .create(let value, _), .update(let value, _, _), .delete(let value, _, _): list = value }
         let id = try resolveList(list, backend.catalog([.lists])).id, action: SectionAction
         let sections = if case .create = input { [Section]() } else { try backend.catalog([.sections], listID: id).sections }
         func sectionID(_ reference: String) throws -> String { try resolve(reference, sections.map { ($0.id, $0.name) }) }
         switch input {
         case .create(_, let name): action = .create(list: id, name: name)
-        case .rename(_, let section, let name): action = .rename(list: id, section: try sectionID(section), name: name)
-        case .move(_, let section, let position):
-            let section = try sectionID(section), neighbor = try sectionID(position.neighborID)
-            guard section != neighbor else { throw Failure(.invalidInput, "Cannot order section against itself") }
-            action = .move(list: id, section: section, position: replacing(position, with: neighbor))
+        case .update(_, let section, var patch):
+            let section = try sectionID(section)
+            if let position = patch.position {
+                let neighbor = try sectionID(position.neighborID)
+                guard section != neighbor else { throw Failure(.invalidInput, "Cannot order section against itself") }
+                patch.position = replacing(position, with: neighbor)
+            }
+            action = .update(list: id, section: section, patch: patch)
         case .delete(_, let section, _): action = .delete(list: id, section: try sectionID(section), confirmed: true)
         }
         return try mutate { try backend.section(action) }
@@ -472,8 +475,9 @@ public final class Operations: @unchecked Sendable {
             switch action { case .create(let name), .rename(_, let name): try Validation.name(name)
             case .delete(_, let yes): try confirmed(yes) }
         case .section(let action):
-            switch action { case .create(_, let name), .rename(_, _, let name): try Validation.name(name)
-            case .delete(_, _, let yes): try confirmed(yes); case .move: break }
+            switch action { case .create(_, let name): try Validation.name(name)
+            case .update(_, _, let patch): try patch.validate()
+            case .delete(_, _, let yes): try confirmed(yes) }
         case .tag(let action):
             switch action { case .rename(_, let name): try Validation.tags([name]); case .delete(_, let yes): try confirmed(yes) }
         case .smartList(let action):

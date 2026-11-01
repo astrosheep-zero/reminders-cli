@@ -71,8 +71,8 @@ reminder groups rename GROUP_UUID --name 'Active projects'
 reminder groups delete GROUP_UUID --yes       # nonempty groups refuse
 reminder sections --list LIST_UUID
 reminder sections add 'Next' --list LIST_UUID
-reminder sections rename SECTION_UUID --list LIST_UUID --name 'Later'
-reminder sections move SECTION_UUID --list LIST_UUID --position-json '{"kind":"after","value":"OTHER_SECTION_UUID"}'
+reminder sections edit SECTION_UUID --list LIST_UUID --set-json '{"name":"Later"}'
+reminder sections edit SECTION_UUID --list LIST_UUID --set-json '{"name":"Later","position":{"kind":"after","value":"OTHER_SECTION_UUID"}}'
 reminder sections delete SECTION_UUID --list LIST_UUID --yes
 reminder tags
 reminder tags rename old --name new
@@ -86,6 +86,8 @@ reminder templates add 'Weekly chores' --list LIST_UUID --include-completed
 reminder templates use TEMPLATE_UUID --name 'This week'
 reminder templates delete TEMPLATE_UUID --yes
 ```
+
+`sections edit` requires `--list` and a nonempty `--set-json` object with `name`, `position`, or both. Omitted attributes stay unchanged; neither field supports clear/null. Target and before/after neighbor resolve within that list; self, unknown or ambiguous neighbors refuse before mutation. Combined rename/reorder uses one native update/save, not two commands. There are no section rename/move aliases.
 
 Bare `lists/groups/sections/tags/smart-lists/templates` fetch **only their requested native family**, not a full catalog followed by frontend filtering. `lists` does not fetch groups, sections, smart lists or templates. `sections --list` resolves the unique list in Core and fetches only that list's sections (names containing `:` work normally). Reminder create/edit resolve only lists and, when needed, that list's sections. Unrelated malformed smart lists/templates cannot break those commands. Only `tags` and full `catalog --json` request native tag labels and accurate open/total counts. Tag mutations use native label selection directly. `lists clear-completed` selects/journals once in Core, then deletes exactly those IDs, including selected parents' children, in one backend request. There is no invitation command, permanent purge, broad cleanup command, batch command or generic native invocation. Catalog enumeration may fail if an underlying private capability is unavailable; it must not fabricate an empty catalog.
 
@@ -196,6 +198,8 @@ Requires Python 3 and the built wrapper. It never calls setup. It creates a uniq
 
 CLI and MCP are peer frontends over a shared Swift facade. Runtime carries bounded opaque bytes through a same-executable disclaimed one-shot worker; Core owns typed validation/resolution/concurrency/journal semantics; Native alone translates ReminderKit through an Objective-C shim. RuntimeShim alone owns responsibility/sandbox SPI. Every worker handles one request and exits; there is no direct-native fallback when isolation fails. Build IDs detect accidental mismatch, not malicious same-user tampering.
 
-Production size for this revision, measured with `find Sources -type f ... | xargs wc -l`: implementation files (Swift/ObjC/C) **4,895 → 4,928 (+33, 0.7%)**; including headers **4,995 → 5,030 (+35)**. The net-reduction target was not reached: typed sparse-list/query fields and the separate native section/tag entry points slightly outweigh the removed wiring. No source was moved into tests or compressed merely to change the count.
+Production size for the earlier sparse-list/query revision, measured with `find Sources -type f ... | xargs wc -l`: implementation files (Swift/ObjC/C) **4,895 → 4,928 (+33, 0.7%)**; including headers **4,995 → 5,030 (+35)**. The net-reduction target was not reached: typed sparse-list/query fields and the separate native section/tag entry points slightly outweigh the removed wiring. No source was moved into tests or compressed merely to change the count.
+
+Section-edit lane offline verification on 2026-11-01: **152 tests passed** (Runtime 15 / Native 55 / Core 49 / CLI+facade+MCP 33) using the Contract's explicit Swift Testing macro-plugin flags, plus `git diff --check`. Parser/facade/Core/native-adapter tests cover name-only, order-only and combined edits, pre-mutation validation and omitted attributes. The adapter double records one `updateSection` call; this is not a new live-save or iCloud claim. Isolated lane production size before merging main, versus `e02a973`: **4,924 → 4,945 (+21)** implementation lines, **5,026 → 5,047 (+21)** including headers. Aggregate interface reduction is measured after the parallel lanes merge; no code was minified or relocated.
 
 Prior signed releases passed scoped live CLI/MCP mutation/recovery checks. See the [coverage record](docs/coverage.md) for build-specific evidence and remaining limits. Explicit image-byte read permission remediation and cross-device iCloud delivery remain unresolved.

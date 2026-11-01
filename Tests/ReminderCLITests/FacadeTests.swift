@@ -26,8 +26,7 @@ struct FacadeTests {
             ("groups_rename", #"{"id":"G","name":"N"}"#, .operation(.group(.rename("G", name: "N")))),
             ("groups_delete", #"{"id":"G","confirmed":true}"#, .operation(.group(.delete("G", confirmed: true)))),
             ("sections_add", #"{"name":"N","list":"L"}"#, .operation(.section(.create(list: "L", name: "N")))),
-            ("sections_rename", #"{"id":"S","list":"L","name":"N"}"#, .operation(.section(.rename(list: "L", section: "S", name: "N")))),
-            ("sections_move", #"{"id":"S","list":"L","position":{"kind":"after","value":"A"}}"#, .operation(.section(.move(list: "L", section: "S", position: .after("A"))))),
+            ("sections_edit", #"{"id":"S","list":"L","set":{"name":"N","position":{"kind":"after","value":"A"}}}"#, .operation(.section(.update(list: "L", section: "S", patch: SectionPatch(name: "N", position: .after("A")))))),
             ("sections_delete", #"{"id":"S","list":"L","confirmed":true}"#, .operation(.section(.delete(list: "L", section: "S", confirmed: true)))),
             ("tags_rename", #"{"id":"old","name":"new"}"#, .operation(.tag(.rename("old", name: "new")))),
             ("tags_delete", #"{"id":"tag","confirmed":true}"#, .operation(.tag(.delete("tag", confirmed: true)))),
@@ -58,6 +57,17 @@ struct FacadeTests {
             let schema = try JSONValue.properties(definition.inputSchema)
             #expect(schema["type"] == .string("object")); #expect(schema["additionalProperties"] == .bool(false))
             #expect(!definition.summary.isEmpty)
+        }
+    }
+    @Test func sparseSectionEditUsesOnlySuppliedFieldsAndRejectsInvalidSets() throws {
+        #expect(try FacadeOperations.prepare("sections_edit", arguments: arguments(#"{"id":"S","list":"L","set":{"name":"N"}}"#)) == .operation(.section(.update(list: "L", section: "S", patch: SectionPatch(name: "N")))))
+        #expect(try FacadeOperations.prepare("sections_edit", arguments: arguments(#"{"id":"S","list":"L","set":{"position":{"kind":"before","value":"A"}}}"#)) == .operation(.section(.update(list: "L", section: "S", patch: SectionPatch(position: .before("A"))))))
+        for text in [#"{"id":"S","set":{"name":"N"}}"#, #"{"id":"S","list":"L"}"#,
+            #"{"id":"S","list":"L","set":{}}"#, #"{"id":"S","list":"L","set":null}"#,
+            #"{"id":"S","list":"L","set":{"name":null}}"#, #"{"id":"S","list":"L","set":{"position":null}}"#,
+            #"{"id":"S","list":"L","set":{"name":" "}}"#, #"{"id":"S","list":"L","set":{"position":{"kind":"first","value":"A"}}}"#,
+            #"{"id":"S","list":"L","set":{"name":"N"},"clear":["position"]}"#] {
+            #expect(throws: Failure.self) { try FacadeOperations.prepare("sections_edit", arguments: arguments(text)) }
         }
     }
     @Test func sparseListAndNativeQueryArgumentsUseTypedCurrentRequests() throws {

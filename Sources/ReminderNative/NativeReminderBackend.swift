@@ -98,8 +98,10 @@ public final class NativeReminderBackend: ReminderBackend {
             case .group(.rename): features = ["group.rename"]
             case .group(.delete): features = ["group.delete"]
             case .section(.create): features = ["section.create"]
-            case .section(.rename): features = ["section.rename"]
-            case .section(.move): features = ["section.move"]
+            case .section(.update(_, _, let patch)):
+                try patch.validate()
+                if patch.name != nil { features.append("section.rename") }
+                if patch.position != nil { features.append("section.move") }
             case .section(.delete): features = ["section.delete"]
             case .smartList(.delete): features = ["smart.delete"]
             case .template(.create): features = ["template.create"]
@@ -354,11 +356,15 @@ public final class NativeReminderBackend: ReminderBackend {
     }
     public func section(_ action: SectionAction) throws -> MutationResult {
         try serialized {
+            try checkSupport(for: .section(action))
             let native = try store()
             switch action {
             case .create(let list, let name): return MutationResult(affectedIDs: [try native.createSection(name, list: list)])
-            case .rename(let list, let id, let name): try native.updateSection(id, list: list, changes: ["name": name]); return MutationResult(affectedIDs: [id])
-            case .move(let list, let id, let position): try native.updateSection(id, list: list, changes: ["position": Translation.position(position)]); return MutationResult(affectedIDs: [id])
+            case .update(let list, let id, let patch):
+                var changes: [String: Any] = [:]
+                if let name = patch.name { changes["name"] = name }
+                if let position = patch.position { changes["position"] = Translation.position(position) }
+                try native.updateSection(id, list: list, changes: changes); return MutationResult(affectedIDs: [id])
             case .delete(let list, let id, let confirmed):
                 guard confirmed else { throw Failure(.invalidInput, "Section deletion needs confirmation") }
                 try native.deleteSection(id, list: list); return MutationResult(affectedIDs: [id])

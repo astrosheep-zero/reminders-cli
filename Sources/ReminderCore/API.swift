@@ -11,8 +11,7 @@ public enum GroupAction: Codable, Sendable, Equatable {
 }
 public enum SectionAction: Codable, Sendable, Equatable {
     case create(list: String, name: String)
-    case rename(list: String, section: String, name: String)
-    case move(list: String, section: String, position: Position)
+    case update(list: String, section: String, patch: SectionPatch)
     case delete(list: String, section: String, confirmed: Bool)
 }
 public enum TagAction: Codable, Sendable, Equatable {

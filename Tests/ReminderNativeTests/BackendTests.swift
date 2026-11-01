@@ -14,6 +14,7 @@ private final class OfflineBridge: RNBridge {
     var patch: [AnyHashable: Any] = [:]
     var catalogReads: [CatalogScope] = []
     var sectionLists: [String?] = []
+    var sectionUpdates: [(String, String, [AnyHashable: Any])] = []
     var defaultReads = 0
     var tagReads = 0
     var selectedTagIDs: [String] = []
@@ -73,6 +74,9 @@ private final class OfflineBridge: RNBridge {
     }
     override func updateReminder(_ identifier: String, changes: [AnyHashable: Any]) throws {
         patch = changes; afterUpdate?()
+    }
+    override func updateSection(_ identifier: String, list listID: String, changes: [AnyHashable: Any]) throws {
+        sectionUpdates.append((identifier, listID, changes))
     }
     override func createReminder(inList listID: String, title: String, changes: [AnyHashable: Any]) throws -> String {
         savedIDs = receipt; return receipt[0]
@@ -155,6 +159,24 @@ struct NativeBackendTests {
         bridge.tagError = Failure(.backend, "Tag selection failed")
         #expect(throws: Failure.self) { try backend.find(q) }
         #expect(bridge.reminderListReads == 0)
+    }
+    @Test func sectionEditSendsOneSparseChangesDictionaryToBridge() throws {
+        let bridge = OfflineBridge(), backend = backend(bridge)
+        let cases: [(SectionPatch, [String: Any])] = [
+            (SectionPatch(name: "Renamed"), ["name": "Renamed"]),
+            (SectionPatch(position: .before(root)), ["position": ["id": root, "after": false]]),
+            (SectionPatch(name: "Renamed", position: .after(root)), ["name": "Renamed", "position": ["id": root, "after": true]])]
+        for (patch, expected) in cases {
+            let count = bridge.sectionUpdates.count
+            #expect(try backend.section(.update(list: list, section: child, patch: patch)).affectedIDs == [child])
+            #expect(bridge.sectionUpdates.count == count + 1)
+            let update = try #require(bridge.sectionUpdates.last)
+            #expect(update.0 == child); #expect(update.1 == list)
+            #expect(update.2 as NSDictionary == expected as NSDictionary)
+        }
+        #expect(throws: Failure.self) { try backend.section(.update(list: list, section: child, patch: SectionPatch())) }
+        #expect(bridge.sectionUpdates.count == 3)
+        #expect(bridge.catalogReads.isEmpty)
     }
     @Test func eachCatalogFamilyReadsOnlyItsNativeFamily() throws {
         for scope in CatalogScope.allCases {
