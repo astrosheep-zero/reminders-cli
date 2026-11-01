@@ -1,15 +1,5 @@
 import Foundation
 
-/// Hash the complete journal record while retaining its existing equality semantics.
-private struct SavedDeletion: Hashable {
-    let entry: DeletionEntry
-    static func == (lhs: Self, rhs: Self) -> Bool { lhs.entry == rhs.entry }
-    func hash(into hasher: inout Hasher) {
-        hasher.combine(entry.id); hasher.combine(entry.title); hasher.combine(entry.listID)
-        hasher.combine(entry.parentID); hasher.combine(entry.time); hasher.combine(entry.state.rawValue)
-    }
-}
-
 /// Serializes this engine instance; it is NOT a global or cross-device transaction.
 /// Callbacks/backends must not re-enter execute. No automatic retry is ever performed.
 public final class Operations: @unchecked Sendable {
@@ -234,10 +224,7 @@ public final class Operations: @unchecked Sendable {
         let snapshot = try io { try journal.read() }
         var states: [String: [(DeletionEntry, RestorableState)]] = [:]
         for entry in snapshot {
-            let state: RestorableState
-            do { state = try backend.restorableState(id: entry.id) }
-            catch let failure as Failure { throw failure }
-            catch { throw Failure(.backend, String(describing: error)) }
+            let state = try backend.restorableState(id: entry.id)
             states[entry.id.lowercased(), default: []].append((entry, state))
         }
         let entries = try io { try journal.transaction { entries in
@@ -280,14 +267,10 @@ public final class Operations: @unchecked Sendable {
         let ids = Array(Set([id] + expected + mutation.affectedIDs)).sorted()
         mutation.affectedIDs = ids; evidence = mutation
         let idKeys = Set(ids.map { $0.lowercased() })
-        var firstSavedByID: [String: DeletionEntry] = [:]
-        var savedParents: Set<String> = []
-        for saved in entries {
-            let key = saved.id.lowercased()
-            if firstSavedByID[key] == nil { firstSavedByID[key] = saved }
-            if idKeys.contains(key), let parent = saved.parentID { savedParents.insert(parent.lowercased()) }
-        }
-        let savedEntries = Set(entries.map { SavedDeletion(entry: $0) })
+        // Keep every snapshot record per ID: confirmation may only remove an exact
+        // saved entry, never a concurrent process's newer deletion intent.
+        let savedByID = Dictionary(grouping: entries, by: { $0.id.lowercased() })
+        let savedParents = Set(entries.filter { idKeys.contains($0.id.lowercased()) }.compactMap { $0.parentID?.lowercased() })
         // A restored subtask can also change its already-active parent. That
         // parent is auxiliary evidence, not another restored/deleted child.
         let restoredRoot = try byID(id)
@@ -306,10 +289,9 @@ public final class Operations: @unchecked Sendable {
             throw Failure(.conflict, "Restore receipt omitted an actual child")
         }
         var restored: [Reminder] = []
-        var hasPartialReadback = false
         // Publish partial evidence on failure without copying the growing array on every iteration.
         defer {
-            if hasPartialReadback { mutation.reminders = restored; evidence = mutation }
+            if !restored.isEmpty { mutation.reminders = restored; evidence = mutation }
         }
         for affectedID in ids {
             // Do not compactMap: a missing child or a failed read invalidates confirmation.
@@ -321,28 +303,23 @@ public final class Operations: @unchecked Sendable {
                     throw Failure(.conflict, "Auxiliary restore parent is not the active top-level parent of the restored root")
                 }
                 restored.append(item)
-                hasPartialReadback = true
                 continue
             }
             guard same(affectedID, id) || (childKeys.contains(affectedID.lowercased()) && same(item.fields.parentID, id)) else {
                 throw Failure(.conflict, "Restore receipt contains an unrelated record")
             }
-            if let saved = firstSavedByID[affectedID.lowercased()] {
-                let matches = saved.parentID.map { parent in item.fields.parentID.map { same($0, parent) } == true } ?? (item.fields.parentID == nil)
-                guard matches else { throw Failure(.conflict, "Restored reminder has unexpected parent") }
-            } else if !same(affectedID, id) {
-                guard item.fields.parentID.map({ same($0, id) }) == true else { throw Failure(.conflict, "Restored child lost parent") }
+            if let saved = savedByID[affectedID.lowercased()]?.first {
+                guard same(item.fields.parentID, saved.parentID) else { throw Failure(.conflict, "Restored reminder has unexpected parent") }
             }
             let hasSavedChildren = savedParents.contains(item.id.lowercased())
             try validateParent(id: item.id, parentID: item.fields.parentID, listID: item.fields.listID,
                                hasChildren: !item.childIDs.isEmpty || hasSavedChildren)
             restored.append(item)
-            hasPartialReadback = true
         }
         mutation.reminders = restored; evidence = mutation
         try io { try journal.transaction { current in
             current.removeAll { candidate in
-                restoredTreeKeys.contains(candidate.id.lowercased()) && savedEntries.contains(SavedDeletion(entry: candidate))
+                restoredTreeKeys.contains(candidate.id.lowercased()) && savedByID[candidate.id.lowercased()]?.contains(candidate) == true
             }
         } }
         return .mutation(mutation)
