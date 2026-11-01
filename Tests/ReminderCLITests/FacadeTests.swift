@@ -19,17 +19,17 @@ struct FacadeTests {
             ("restore", #"{"id":"R","list":"L"}"#, .operation(.restore(id: "R", list: "L"))),
             ("image", #"{"id":"R","imageID":"I"}"#, .operation(.image(reminderID: "R", imageID: "I"))),
             ("lists_add", #"{"name":"N"}"#, .operation(.list(.create(ListFields(name: "N"))))),
-            ("lists_edit", #"{"id":"L","fields":{"name":"N","pinned":false,"kind":"standard","sort":"manual"}}"#, .operation(.list(.update("L", { var p = ListPatch(); p.name = "N"; p.pinned = false; p.kind = .standard; p.sort = .manual; return p }())))),
+            ("lists_edit", #"{"id":"L","set":{"name":"N","pinned":false,"kind":"standard","sort":"manual"}}"#, .operation(.list(.update("L", { var p = ListPatch(); p.name = "N"; p.pinned = false; p.kind = .standard; p.sort = .manual; return p }())))),
             ("lists_delete", #"{"id":"L","confirmed":true}"#, .operation(.list(.delete("L", confirmed: true)))),
             ("lists_clear_completed", #"{"id":"L","confirmed":true}"#, .operation(.list(.clearCompleted("L", confirmed: true)))),
             ("groups_add", #"{"name":"N"}"#, .operation(.group(.create("N")))),
-            ("groups_rename", #"{"id":"G","name":"N"}"#, .operation(.group(.rename("G", name: "N")))),
+            ("groups_edit", #"{"id":"G","set":{"name":"N"}}"#, .operation(.group(.rename("G", name: "N")))),
             ("groups_delete", #"{"id":"G","confirmed":true}"#, .operation(.group(.delete("G", confirmed: true)))),
             ("sections_add", #"{"name":"N","list":"L"}"#, .operation(.section(.create(list: "L", name: "N")))),
             ("sections_edit", #"{"id":"S","list":"L","set":{"name":"N","position":{"kind":"after","value":"A"}}}"#, .operation(.section(.update(list: "L", section: "S", patch: SectionPatch(name: "N", position: .after("A")))))),
             ("sections_delete", #"{"id":"S","list":"L","confirmed":true}"#, .operation(.section(.delete(list: "L", section: "S", confirmed: true)))),
-            ("tags_rename", #"{"id":"old","name":"new"}"#, .operation(.tag(.rename("old", name: "new")))),
-            ("tags_delete", #"{"id":"tag","confirmed":true}"#, .operation(.tag(.delete("tag", confirmed: true)))),
+            ("tags_edit", #"{"tag":"old","set":{"name":"new"}}"#, .operation(.tag(.rename("old", name: "new")))),
+            ("tags_delete", #"{"tag":"tag","confirmed":true}"#, .operation(.tag(.delete("tag", confirmed: true)))),
             ("smart_lists_add", #"{"name":"N","definition":{"filters":[{"kind":"flagged","value":true}]}}"#, .operation(.smartList(.create(SmartList(id: "", name: "N", filters: [.flagged(true)]))))),
             ("smart_lists_edit", #"{"id":"S","definition":{"id":"S","name":"N","match":"all","filters":[]}}"#, .operation(.smartList(.update("S", SmartList(id: "S", name: "N"))))),
             ("smart_lists_delete", #"{"id":"S","confirmed":true}"#, .operation(.smartList(.delete("S", confirmed: true)))),
@@ -72,8 +72,8 @@ struct FacadeTests {
     }
     @Test func sparseListAndNativeQueryArgumentsUseTypedCurrentRequests() throws {
         var patch = ListPatch(); patch.name = "Only rename"
-        #expect(try FacadeOperations.prepare("lists_edit", arguments: arguments(#"{"id":"L","fields":{"name":"Only rename"}}"#)) == .operation(.list(.update("L", patch))))
-        #expect(try FacadeOperations.prepare("lists_edit", arguments: arguments(#"{"id":"L","clear":["color","icon","groupID"]}"#)) == .operation(.list(.update("L", ListPatch(), clear: [.color, .icon, .groupID]))))
+        #expect(try FacadeOperations.prepare("lists_edit", arguments: arguments(#"{"id":"L","set":{"name":"Only rename"}}"#)) == .operation(.list(.update("L", patch))))
+        #expect(try FacadeOperations.prepare("lists_edit", arguments: arguments(#"{"id":"L","clear":["color","icon","group"]}"#)) == .operation(.list(.update("L", ListPatch(), clear: [.color, .icon, .groupID]))))
         let request = try FacadeOperations.prepare("find", arguments: arguments(#"{"text":"fish","matching":"prefix","tags":["work","home"],"excludeTags":["blocked"],"tagMatch":"any","flagged":false,"limit":12,"offset":4}"#))
         guard case .operation(.find(let query)) = request else { throw invalid("Expected find") }
         #expect(query.text == "fish"); #expect(query.matching == .prefix)
@@ -82,8 +82,8 @@ struct FacadeTests {
         let edit = try #require(FacadeOperations.definitions.first { $0.toolName == "lists_edit" })
         #expect(try JSONValue.properties(edit.inputSchema)["required"] == .array([.string("id")]))
     }
-    @Test func creationAllowsDefaultParentOrFieldsListAndRejectsConflictingIdentity() throws {
-        let samples = [#"{"title":"T"}"#, #"{"title":"T","fields":{"parentID":"P"}}"#, #"{"title":"T","fields":{"listID":"L"}}"#]
+    @Test func creationAllowsDefaultOrParentAndRejectsDuplicateIdentity() throws {
+        let samples = [#"{"title":"T"}"#, #"{"title":"T","fields":{"parent":"P"}}"#, #"{"title":"T","list":"L"}"#]
         for (json, fields) in zip(samples, [ReminderFields(title: "T", listID: ""), ReminderFields(title: "T", listID: "", parentID: "P"), ReminderFields(title: "T", listID: "L")]) {
             #expect(try FacadeOperations.prepare("add", arguments: arguments(json)) == .operation(.create(ReminderDraft(fields: fields))))
         }
@@ -93,6 +93,24 @@ struct FacadeTests {
         let definition = try #require(FacadeOperations.definitions.first { $0.name == "add" })
         #expect(try JSONValue.properties(definition.inputSchema)["required"] == .array([.string("title")]))
     }
+    @Test func writeReferencesAndClearRules() throws {
+        let create = try FacadeOperations.prepare("add", arguments: arguments(#"{"title":"T","list":"L","fields":{"parent":"P","section":"S","assignee":"me"}}"#))
+        #expect(create == .operation(.create(ReminderDraft(fields: ReminderFields(title: "T", listID: "L", parentID: "P", sectionID: "S", assigneeID: "me")))))
+        let edit = try FacadeOperations.prepare("edit", arguments: arguments(#"{"id":"R","version":"V","set":{"list":"L","parent":"P","section":"S","assignee":"me"}}"#))
+        guard case .operation(.update(_, _, let patch)) = edit else { throw invalid("Expected edit") }
+        #expect(patch.listID == .set("L")); #expect(patch.parentID == .set("P"))
+        #expect(patch.sectionID == .set("S")); #expect(patch.assigneeID == .set("me"))
+        let list = try FacadeOperations.prepare("lists_add", arguments: arguments(#"{"name":"N","fields":{"group":"G"}}"#))
+        var fields = ListFields(name: "N"); fields.groupID = "G"
+        #expect(list == .operation(.list(.create(fields))))
+        let listEdit = try FacadeOperations.prepare("lists_edit", arguments: arguments(#"{"id":"L","set":{"group":"G","pinned":false}}"#))
+        var listPatch = ListPatch(); listPatch.groupID = "G"; listPatch.pinned = false
+        #expect(listEdit == .operation(.list(.update("L", listPatch))))
+        for json in [#"{"id":"R","version":"V","clear":["title"]}"#, #"{"id":"R","version":"V","clear":["list"]}"#, #"{"id":"R","version":"V","clear":["position"]}"#, #"{"id":"R","version":"V","clear":["parent","parent"]}"#, #"{"id":"R","version":"V","set":{"parent":"P"},"clear":["parent"]}"#] {
+            #expect(throws: Failure.self) { try FacadeOperations.prepare("edit", arguments: arguments(json)) }
+        }
+        #expect(throws: Failure.self) { try FacadeOperations.prepare("lists_add", arguments: arguments(#"{"name":"N","fields":{"name":"N"}}"#)) }
+    }
     @Test func schemaRejectsUnknownNullInternalEnumsAndMissingReplacementFields() throws {
         let samples: [(String, String)] = [
             ("setup", "{}"), ("show", #"{"id":"R","setup":true}"#), ("show", #"{"id":null}"#),
@@ -100,10 +118,10 @@ struct FacadeTests {
             ("edit", #"{"id":"R","version":"V","set":{"due":{"date":{"_0":{"year":2030,"month":1,"day":1}}}}}"#),
             ("edit", #"{"id":"R","version":"V","set":{"due":{"kind":"date","value":{"year":2030,"month":1,"day":1,"unknown":2}}}}"#),
             ("edit", #"{"id":"R","version":"V","set":{"notes":"x"},"clear":["notes"]}"#),
-            ("lists_edit", #"{"id":"L","fields":{}}"#), ("lists_delete", #"{"id":"L","confirmed":false}"#),
-            ("lists_edit", #"{"id":"L","fields":{"color":"red"},"clear":["color"]}"#),
+            ("lists_edit", #"{"id":"L","set":{}}"#), ("lists_delete", #"{"id":"L","confirmed":false}"#),
+            ("lists_edit", #"{"id":"L","set":{"color":"red"},"clear":["color"]}"#),
             ("lists_edit", #"{"id":"L","clear":["icon","icon"]}"#), ("lists_edit", #"{"id":"L","clear":["name"]}"#),
-            ("lists_edit", #"{"id":"L","fields":{"color":null}}"#),
+            ("lists_edit", #"{"id":"L","set":{"color":null}}"#),
             ("smart_lists_edit", #"{"id":"S","definition":{"name":"N"}}"#),
             ("smart_lists_add", #"{"name":"N","definition":{"filters":[{"kind":"unknown","key":"x","payload":"AQ=="}]}}"#),
             ("find", #"{"query":{}}"#), ("find", #"{"scope":"title"}"#), ("find", #"{"limit":1.5}"#), ("find", #"{"limit":0}"#),
@@ -145,9 +163,9 @@ struct FacadeTests {
         #expect(row["completionDate"] == .string("1970-01-01T00:02:00Z"))
         #expect(try Reminder(id: "R", fields: fields).version() == item.version())
         #expect(throws: Failure.self) { try FacadeOperations.prepare("edit", arguments: ["id": .string("R"), "version": .string("V"), "set": .object(["creationDate": row["creationDate"]!])]) }
-        let prepared = try FacadeOperations.prepare("edit", arguments: ["id": .string("R"), "version": .string("V"), "set": row["fields"]!])
-        guard case .operation(.update(_, _, let patch)) = prepared else { throw invalid("Expected update") }
-        #expect(try patch.applying(to: ReminderFields(title: "old", listID: "old")) == fields)
+        guard case .object(let outputFields) = row["fields"] else { throw invalid("Expected fields") }
+        #expect(outputFields["listID"] == .string("L"))
+        #expect(outputFields["position"] == .object(["kind": .string("before"), "value": .string("A")]))
         let smart = SmartList(id: "S", name: "N", filters: [.date(.relative(past: 0, future: 7, unit: .days)), .unknown(key: "native", payload: Data([1]))])
         let catalog = Catalog(lists: [ReminderList(id: "L", fields: ListFields(name: "N", position: .after("B")))],
             sections: [Section(id: "A", name: "N", listID: "L", position: .before("B"))], smartLists: [smart],

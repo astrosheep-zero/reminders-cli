@@ -25,6 +25,7 @@ struct MCPTests {
             for (name, readOnly, destructive, idempotent) in [
                 ("show", true, false, true), ("add", false, false, false),
                 ("edit", false, true, false), ("lists_delete", false, true, false),
+                ("groups_edit", false, true, false), ("tags_edit", false, true, false), ("tags_delete", false, true, false),
                 ("deleted", false, true, false)
             ] {
                 let tool = try #require(tools.first { $0.name == name })

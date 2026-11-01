@@ -56,18 +56,18 @@ reminder restore REMINDER_UUID --list LIST_UUID         # explicit destination i
 reminder image REMINDER_UUID IMAGE_UUID --json          # bytes as base64, not original file path
 ```
 
-IDs match case-insensitively; container/member names match exactly. Reminder title references use the native title-equals predicate, and tag names use native label matching. Ambiguous reminder/container names refuse. Versioned reminder output includes `id`, `fields`, `images`, `childIDs`, and `version`, plus optional read-only `creationDate`, `lastModifiedDate`, and `completionDate` as ISO-8601 UTC strings outside `fields`. These timestamps do not change version tokens. Use the token from the most recent `show`/`find` or mutation result. An edit's missing fields stay unchanged; `--set-json` explicitly sets values (including empty string, empty arrays and false); `--clear field,field` explicitly clears. Do not use null as a substitute for clear. Clearing title/list is invalid. List edits are **sparse merges**: omitted name/color/icon/group/pin/kind/sort stay unchanged. Clear optional appearance/grouping only with `--clear color,icon,groupID`; null, duplicate clears, conflicting fields/clear and empty edits refuse. List `position` is a write-only ordering directive: omission means no reordering, never replay an old neighbor. Smart-list edits still require a full replacement:
+IDs match case-insensitively; container/member names match exactly. Reminder title references use the native title-equals predicate, and tag names use native label matching. Ambiguous reminder/container names refuse. Versioned reminder output includes `id`, `fields`, `images`, `childIDs`, and `version`, plus optional read-only `creationDate`, `lastModifiedDate`, and `completionDate` as ISO-8601 UTC strings outside `fields`. These timestamps do not change version tokens. Use the token from the most recent `show`/`find` or mutation result. An edit's missing fields stay unchanged; `--set-json` explicitly sets values (including empty string, empty arrays and false); `--clear field,field` explicitly clears. Do not use null as a substitute for clear. Clearing title/list is invalid. List edits are **sparse merges**: omitted name/color/icon/group/pin/kind/sort stay unchanged. Clear optional appearance/grouping only with `--clear color,icon,group`; null, duplicate clears, conflicting fields/clear and empty edits refuse. List `position` is a write-only ordering directive: omission means no reordering, never replay an old neighbor. Smart-list edits still require a full replacement:
 
 ```sh
 reminder lists --json                         # lists, default marker and joined shared-list members
 reminder lists add 'Work' --fields-json '{"color":"blue","icon":"briefcase","pinned":true,"kind":"standard","sort":"manual"}'
-reminder lists edit LIST_UUID --fields-json '{"name":"New work"}'  # retains color/icon/group/pin/kind/sort
-reminder lists edit LIST_UUID --fields-json '{"pinned":false,"sort":"due"}' --clear color,icon
-reminder lists edit LIST_UUID --clear groupID                   # explicit ungroup
+reminder lists edit LIST_UUID --set-json '{"name":"New work"}'  # retains color/icon/group/pin/kind/sort
+reminder lists edit LIST_UUID --set-json '{"pinned":false,"sort":"due"}' --clear color,icon
+reminder lists edit LIST_UUID --clear group                   # explicit ungroup
 reminder lists clear-completed LIST_UUID --yes
 reminder lists delete LIST_UUID --yes
 reminder groups add 'Projects'
-reminder groups rename GROUP_UUID --name 'Active projects'
+reminder groups edit GROUP_UUID --set-json '{"name":"Active projects"}'
 reminder groups delete GROUP_UUID --yes       # nonempty groups refuse
 reminder sections --list LIST_UUID
 reminder sections add 'Next' --list LIST_UUID
@@ -75,7 +75,7 @@ reminder sections edit SECTION_UUID --list LIST_UUID --set-json '{"name":"Later"
 reminder sections edit SECTION_UUID --list LIST_UUID --set-json '{"name":"Later","position":{"kind":"after","value":"OTHER_SECTION_UUID"}}'
 reminder sections delete SECTION_UUID --list LIST_UUID --yes
 reminder tags
-reminder tags rename old --name new
+reminder tags edit old --set-json '{"name":"new"}'
 reminder tags delete old --yes
 reminder smart-lists
 reminder smart-lists add 'Flagged' --definition-json '{"match":"all","filters":[{"kind":"flagged","value":true}]}'
@@ -93,12 +93,12 @@ Bare `lists/groups/sections/tags/smart-lists/templates` fetch **only their reque
 
 ## Exact typed JSON
 
-Create requires only the positional title; `--list` is optional. `--fields-json` overlays Core defaults but cannot change that title or conflict with an explicitly supplied `--list`. With no top-level list, `fields.listID` may supply it; if still empty, Core inherits the parent's list when `parentID` is set, otherwise requires one unique default list. Edit's `--set-json` uses the **same field names and value shapes**, without Change wrappers. Omit optional nil values on creation/replacement; do not supply null. The parser translates edit values to Core's explicit set/clear/absent representation. List creation also overlays defaults. List edit accepts any subset of `fields` plus optional `--clear color,icon,groupID`, with at least one change; omitted fields preserve current values, including false/enum settings. Core resolves grouping/order references and validates the merged fields before mutation. List merging is a local read/merge/save, not an atomic cross-device update. Smart-list creation defaults to an empty id, positional name, `match=all`, empty filters; full replacement requires `id`, `name`, `match`, `filters`.
+Create requires a positional title and optional `--list`; `--fields-json` excludes title and list. If list is omitted, Core inherits the parent's list or selects the unique default. Edit uses `--set-json`; omitted values stay unchanged and false, empty strings and empty arrays are explicit values subject to validation. Nulls, duplicate clears, conflicts and empty edits fail. Clear accepts notes, due, start, recurrence, earlyAlerts, location, contact, url, priority, flagged, urgent, completed, tags, parent, section and assignee. Optional values are removed; collections reset to empty, booleans to false and priority to none. There are no automatic cascading clears. List creation excludes name from fields; list edit uses sparse `--set-json` and `--clear color,icon,group`. Container edits use local read/merge/save and can race; reminder version checks are optimistic, not atomic CAS. Smart-list creation defaults to an empty id, positional name, `match=all`, empty filters; full replacement requires `id`, `name`, `match`, `filters`.
 
 | Reminder field | JSON value |
 |---|---|
-| `title`, `listID` | strings; creation title must match the positional title; creation `listID` may supply an omitted `--list` |
-| `notes`, `url`, `parentID`, `sectionID`, `assigneeID` | strings; assignment accepts a joined member ID/name or `me` |
+| `title`, `list` | strings in edit; creation supplies these at top level |
+| `notes`, `url`, `parent`, `section`, `assignee` | strings; assignment accepts a joined member ID/name or `me` |
 | `priority` | `"none"`, `"low"`, `"medium"`, `"high"` |
 | `flagged`, `urgent`, `completed` | boolean; urgent requires a timed due date |
 | `tags` | string array, no `#` or whitespace in a tag |
@@ -137,7 +137,7 @@ reminder find --query-json '{"tags":["work"],"includeCompleted":true,"limit":20,
 
 Search migration: search `scope` is not exposed; CLI/MCP reject it. `tags` is available again as a native ordinary-query filter. `section`, `assigneeID`, `dueOnOrAfter`, `dueBefore`, and creation/modified/completion date ranges remain unsupported; CLI/MCP reject them. Date criterion symbols exist, but their optional-date binary-plist encoding is not established, so this offline-only revision does not guess it. Text matching follows Apple’s native criteria semantics instead of local title/notes substring checks. Use a supported native smart list for its filter families. These changes affect search inputs; reminder editing fields remain available. The implementation uses the native Siri criteria data view, not the Reminders app’s Spotlight search UI.
 
-List fields: `name`, optional `color/icon/groupID/position`, `pinned`, `kind` (`standard/groceries`), `sort` (`manual/due/creation/priority/title`). Colors: `red/orange/yellow/green/light-blue/blue/indigo/pink/purple/brown/gray/rose` or `#RRGGBB`. `position` uses before/after list IDs; `groupID` groups lists. All normal enum restrictions still apply on native support checks.
+List fields: `name`, optional `color/icon/group/position`, `pinned`, `kind` (`standard/groceries`), `sort` (`manual/due/creation/priority/title`). Colors: `red/orange/yellow/green/light-blue/blue/indigo/pink/purple/brown/gray/rose` or `#RRGGBB`. `position` uses before/after list IDs or names; `group` groups lists. All normal enum restrictions still apply on native support checks.
 
 Smart-list fields: `id`, `name`, optional `color/icon`, `match` (`all/any`), `filters`. Each filter is one tagged value; date entries below are alternatives, since each family may occur only once in a definition:
 
@@ -153,7 +153,7 @@ Smart-list fields: `id`, `name`, optional `color/icon`, `match` (`all/any`), `fi
 ]
 ```
 
-Date filters support `none/any`, civil `[from,before)` ranges, and nonnegative relative counts with exactly one of past/future positive, using `hours/days/weeks/months`. Location filters are only `none/gettingInCar/gettingOutOfCar`; smart-filter priorities are only `low/medium/high`. Arbitrary time windows, overdue-only and coordinate-free place variants are not writable API cases; minute, zero or bidirectional relative ranges and priority `none` fail `invalidInput`. Unknown native filter payloads are preserved on **read** as `unknown` with key/base64 bytes, but cannot be submitted as writable filters. A smart list already containing unknown filters is read-only: even omitting those filters from a replacement must refuse rather than silently discard native conditions. For fully modeled lists, roundtrip the complete definition from `result.smartLists` into edit. Roundtrip reminders by copying `fields` into `--set-json` only for fields you intend to change; do **not** blindly replace every native field or pass the whole output envelope.
+Date filters support `none/any`, civil `[from,before)` ranges, and nonnegative relative counts with exactly one of past/future positive, using `hours/days/weeks/months`. Location filters are only `none/gettingInCar/gettingOutOfCar`; smart-filter priorities are only `low/medium/high`. Arbitrary time windows, overdue-only and coordinate-free place variants are not writable API cases; minute, zero or bidirectional relative ranges and priority `none` fail `invalidInput`. Unknown native filter payloads are preserved on **read** as `unknown` with key/base64 bytes, but cannot be submitted as writable filters. A smart list already containing unknown filters is read-only: even omitting those filters from a replacement must refuse rather than silently discard native conditions. For fully modeled lists, roundtrip the complete definition from `result.smartLists` into edit. For reminder edits, select intended fields and translate output ID-suffixed references to their write names; do **not** blindly replace every native field or pass the whole output envelope.
 
 ## Stable output and failure semantics
 
@@ -182,7 +182,7 @@ Other result kinds: `mutation` (affectedIDs, count, versioned reminders, lists),
 
 A version check is optimistic **read/check/save**, not atomic cross-device compare-and-swap. Another process/device may race it. No automatic retries. If a worker times out/dies after mutationStarted, final output is missing/malformed after a possible save, or a multi-step write cannot be confirmed, exit 5 means the operation **may have happened**. Inspect returned IDs and state first, never blindly retry creation/deletion. SIGINT/SIGTERM are handled through Dispatch signal sources and RuntimeCancellation so the frontend waits for worker termination/reaping; interruption after mutation may still return unknown. A clean valid final frame is authoritative even if the worker exits abnormally; extra/contradictory stdout invalidates the protocol. Local acceptance is **not** proof of iCloud delivery.
 
-Deletion history lives in `~/Library/Application Support/RemindersCLI/deleted.json` with restrictive permissions, a sibling cross-process lock and atomic replacement. Intent is persisted **before** native deletion; pending evidence survives interruption. `deleted` reconciles saved IDs, never claims all-system Recently Deleted and never infers absence from an error. Restore requires the saved original destination or explicit `--list`. Parent restore includes known children. There is no permanent purge.
+Deletion history lives in `~/Library/Application Support/RemindersCLI/deleted.json` with restrictive permissions, a sibling cross-process lock and atomic replacement. Intent is persisted **before** native deletion; pending evidence survives interruption. `deleted` reconciles saved IDs, never claims all-system Recently Deleted and never infers absence from an error. Restore requires the saved original destination or explicit `--list`. Parent restore includes known children. The journal does not guarantee indefinite recovery or container reconstruction. There is no permanent purge.
 
 ## Optional isolated live smoke — NOT run by verification
 

@@ -24,9 +24,9 @@ There are **35 tools**, with typed object schemas, required properties, closed n
 | Reminders | `find`, `show`, `add`, `edit`, `done`, `delete`, `deleted`, `restore`, `image` |
 | Catalog | `catalog`, `lists`, `groups`, `sections`, `tags`, `smart_lists`, `templates` |
 | Lists | `lists_add`, `lists_edit`, `lists_delete`, `lists_clear_completed` |
-| Groups | `groups_add`, `groups_rename`, `groups_delete` |
+| Groups | `groups_add`, `groups_edit`, `groups_delete` |
 | Sections | `sections_add`, `sections_edit`, `sections_delete` |
-| Tags | `tags_rename`, `tags_delete` |
+| Tags | `tags_edit`, `tags_delete` |
 | Smart lists | `smart_lists_add`, `smart_lists_edit`, `smart_lists_delete` |
 | Templates | `templates_add`, `templates_use`, `templates_delete` |
 
@@ -85,15 +85,17 @@ Date filters also model `none`. Relative ranges require nonnegative counts, exac
 | `image` | `id`, `imageID`; explicit byte read |
 | `sections` | Optional `list` ID/exact name, resolved in Core before a list-scoped native section read |
 | Container add | `name`; sections/templates also require `list`; lists allow `fields`; smart lists require `definition`; templates allow `includeCompleted` |
-| List edit | `id`, optional sparse `fields`, optional `clear:["color","icon","groupID"]`; at least one change |
+| List edit | `id`, optional sparse `set`, optional `clear:["color","icon","group"]`; at least one change |
 | Smart-list edit | `id`, full `definition` (`id`, `name`, `match`, `filters` required) |
-| Group/tag rename | `id`, `name` (tag `id` is a name resolved by native label matching) |
+| Group/tag edit | `id` or `tag`, respectively, and `set:{"name":"..."}`; tags use native label matching |
 | Section edit | `id`, `list`, nonempty `set:{name?,position?}`; tagged before/after position; no clear/null |
-| Container delete / clear-completed | `id`, `confirmed:true`; sections also require `list` |
+| Container delete / clear-completed | `id`, `confirmed:true`; tags use `tag` and sections also require `list` |
 | Template use | `id`, optional `name` for the new list |
 | Other listings / `catalog` / `doctor` / `deleted` | Empty object |
 
-Reminder `fields`/`set` keys: `title`, `listID`, `notes`, `due`, `start`, `recurrence`, `earlyAlerts`, `location`, `contact`, `url`, `priority`, `flagged`, `urgent`, `completed`, `tags`, `parentID`, `sectionID`, `position`, `assigneeID`. Priority is `none/low/medium/high`; flags are booleans and tags are string arrays. Creation fields overlay Core defaults but cannot change the positional title or conflict with an explicitly supplied top-level `list`. If top-level `list` is omitted, `fields.listID` is allowed; an empty listID passes unchanged to Core for parent-list inheritance or unique-default selection. Edit sets preserve false/empty string/empty array; `clear` is an array of field names, disjoint from `set`. Missing fields remain absent. List edits merge supplied fields over the current list in Core: omitted color/icon/group/pin/kind/sort/name remain unchanged, false is a real update, and only explicit `clear` removes optional color/icon/groupID. Duplicate or conflicting fields/clear, nulls and empty edits fail. Position omission is always a write-only no-ordering directive, never replayed from an old snapshot. Core validates the merged fields and resolves grouping/neighbor names before entering the backend; this is optimistic read/merge/save, not cross-device CAS.
+Reminder creation takes top-level `title` and optional `list`; `fields` excludes both. Edit `set` accepts `title`, `list`, `notes`, `due`, `start`, `recurrence`, `earlyAlerts`, `location`, `contact`, `url`, `priority`, `flagged`, `urgent`, `completed`, `tags`, `parent`, `section`, `position`, and `assignee`. References resolve in Core; `assignee` accepts `me` or a unique member. On creation, an omitted list inherits the parent's list or selects the unique default; on edit, omitting list preserves it. Reminder position uses before/after and a neighbor UUID. Read fields retain ID suffixes and position, which participates in versioning.
+
+Clear accepts `notes`, `due`, `start`, `recurrence`, `earlyAlerts`, `location`, `contact`, `url`, `priority`, `flagged`, `urgent`, `completed`, `tags`, `parent`, `section`, and `assignee`. Optional values are removed; collections reset to empty, booleans to false and priority to none. No cascading clears occur. Omitted fields stay unchanged; false, empty strings and arrays are values subject to validation. Duplicate clears, set/clear conflicts, nulls, unknowns and empty edits fail. List edits use sparse `set` and clear only color, icon or group. List and section neighbor references accept scoped ID/name resolution. Container edits are non-versioned local read/merge/save and may race. Reminder version checks are optimistic, not atomic CAS. The deletion journal does not guarantee indefinite recovery or container reconstruction.
 
 Section edit uses `sections edit ID --list LIST --set-json JSON` on CLI and `sections_edit` on MCP. Name-only, order-only and combined changes share one sparse typed patch and one native update/save. Omitted attributes are not resent. Core resolves target and optional neighbor in the required list context and rejects self/unknown/ambiguous references before mutation; empty sets, nulls and clear fields fail validation. Section read output is unchanged; there are no rename/move aliases.
 
@@ -101,7 +103,7 @@ CLI `--query-json` is a shorthand for the same top-level fields. Supplying a fie
 
 Query keys: `text`, `matching` (`exact`, `prefix`, `word`), `tags`, `excludeTags`, `tagMatch` (`all`, `any`), `list`, `smartList`, `includeCompleted`, `completed`, `flagged`, `urgent`, `repeating`, `hasLocation`, `hasDueDate`, `limit`, `offset`. Matching requires nonblank text and defaults to `word`; text uses native `textualField` criteria. Search `scope` is not exposed and is rejected by the shared schema. Tags/excludeTags are label arrays (no #/whitespace/NUL), omitted/empty arrays add no filtering, included tags default to all-of, and tagMatch requires nonempty included tags. Native hashtag include/exclude selection runs first: empty IDs return []; with criteria the IDs become an objectID criterion; unconstrained tag reads (`includeCompleted:true`) slice the IDs before batch hydration. Default incomplete-only and explicit completed constraints remain native search criteria, not local filters. Unverified optional-date criterion encodings are not exposed. For ordinary queries, explicit `completed:true/false` overrides `includeCompleted` and selects only completed/incomplete reminders; with `completed` omitted, `includeCompleted:true` selects all and false/default selects incomplete. Smart-list mode rejects `completed` and other criteria, but allows `includeCompleted`, limit and offset. Default limit is 100, offset 0. Criteria are matched and paged by native search in native order. Smart-list paging slices native IDs in returned order; neither mode promises a stable snapshot across requests.
 
-List fields: `name`, `color`, `icon`, `groupID`, `pinned`, `kind` (`standard/groceries`), `sort` (`manual/due/creation/priority/title`), `position`. Smart definitions: `id`, `name`, optional `color`/`icon`, `match` (`all/any`), `filters`. Creation defaults are retained for omitted fields. List edits preserve omissions and use explicit clear; only smart-list full replacements omit optional fields to clear them. Neither accepts null as a clearing instruction.
+List write fields: `name`, `color`, `icon`, `group`, `pinned`, `kind` (`standard/groceries`), `sort` (`manual/due/creation/priority/title`), `position`. Smart definitions: `id`, `name`, optional `color`/`icon`, `match` (`all/any`), `filters`. List creation supplies name at top level and excludes it from fields. Creation defaults are retained for omitted fields. List edits preserve omissions and use explicit clear; only smart-list full replacements omit optional fields to clear them. Neither accepts null as a clearing instruction.
 
 Images are `{fileName, contentType, bytes}` with base64 `bytes`; MCP never reads caller-supplied filesystem paths. CLI `--image` reads a bounded regular file in the frontend, converts it to exactly this payload and drops the original path. Runtime requests/results are capped at 16 MiB before MCP wrapping; JSON/base64 overhead reduces usable attachment bytes. Ordinary reads return image metadata only. Explicit image read still has the separately recorded native permission limitation (`NSCocoaErrorDomain/257`); this revision neither supplies an unverified authorization mechanism nor claims it repaired, and does not prescribe Full Disk Access as a fix.
 
@@ -111,8 +113,8 @@ Examples of `tools/call` arguments:
 {"name":"add","arguments":{"title":"Buy fish","list":"Inbox","fields":{"due":{"kind":"date","value":{"year":2030,"month":2,"day":3}}}}}
 {"name":"edit","arguments":{"id":"REMINDER_ID","version":"VERSION","set":{"flagged":false,"notes":""},"clear":["due"]}}
 {"name":"sections_edit","arguments":{"id":"SECTION_ID","list":"LIST_ID","set":{"name":"Later","position":{"kind":"after","value":"OTHER_SECTION_ID"}}}}
-{"name":"lists_edit","arguments":{"id":"LIST_ID","fields":{"name":"Renamed"}}}
-{"name":"lists_edit","arguments":{"id":"LIST_ID","fields":{"pinned":false},"clear":["icon","groupID"]}}
+{"name":"lists_edit","arguments":{"id":"LIST_ID","set":{"name":"Renamed"}}}
+{"name":"lists_edit","arguments":{"id":"LIST_ID","set":{"pinned":false},"clear":["icon","group"]}}
 {"name":"find","arguments":{"text":"fish","tags":["work","home"],"excludeTags":["blocked"],"tagMatch":"any"}}
 ```
 

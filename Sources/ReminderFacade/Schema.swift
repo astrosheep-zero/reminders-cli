@@ -96,12 +96,28 @@ enum Shapes {
         "priority": priority, "flagged": .bool, "urgent": .bool, "completed": .bool, "tags": .array(.string),
         "parentID": .string, "sectionID": .string, "position": position, "assigneeID": .string]
     static let fields = Schema.fields(reminderFields)
+    static let reminderWrite: [String: Schema] = {
+        var fields = reminderFields
+        for key in ["list", "parent", "section", "assignee"] { fields[key] = fields.removeValue(forKey: key + "ID") }
+        return fields
+    }()
+    static let reminderCreate = Schema.fields(reminderWrite.filter { !["title", "list"].contains($0.key) })
+    static let reminderSet = Schema.fields(reminderWrite)
+    static let reminderClear = "notes due start recurrence earlyAlerts location contact url priority flagged urgent completed tags parent section assignee"
     static let query: [String: Schema] = ["text": .string, "matching": .choice("exact prefix word"),
         "tags": .array(.string), "excludeTags": .array(.string), "tagMatch": .choice("all any"), "list": .string, "smartList": .string,
         "includeCompleted": .bool, "completed": .bool, "flagged": .bool, "urgent": .bool, "repeating": .bool, "hasLocation": .bool,
         "hasDueDate": .bool, "limit": .int, "offset": .int]
-    static let list = Schema.fields(["name": .string, "color": .string, "icon": .string, "groupID": .string,
-        "pinned": .bool, "kind": .choice("standard groceries"), "sort": .choice("manual due creation priority title"), "position": position])
+    static let listFields: [String: Schema] = ["name": .string, "color": .string, "icon": .string, "groupID": .string,
+        "pinned": .bool, "kind": .choice("standard groceries"), "sort": .choice("manual due creation priority title"), "position": position]
+    static let list = Schema.fields(listFields)
+    static let listWrite: [String: Schema] = {
+        var fields = listFields
+        fields["group"] = fields.removeValue(forKey: "groupID")
+        return fields
+    }()
+    static let listCreate = Schema.fields(listWrite.filter { $0.key != "name" })
+    static let listSet = Schema.fields(listWrite)
     static let filter = Schema.tagged([
         "tags": .fields(["value": .array(.string), "match": .choice("all any")], "value match"),
         "date": .fields(["value": .tagged(["none": .fields([:]), "any": .fields([:]),

@@ -61,12 +61,20 @@ struct Arguments {
         guard case .object(let object) = values[key] else { return defaults }
         return try Arguments(values: [key: .object(JSONValue.properties(defaults).merging(object) { _, new in new })]).decode(T.self, key)
     }
+    func mapped(_ key: String, references: [String]) -> Arguments {
+        guard case .object(var object) = values[key] else { return self }
+        for reference in references { object[reference + "ID"] = object.removeValue(forKey: reference) }
+        var result = values; result[key] = .object(object); return Arguments(values: result)
+    }
+    func setName() throws -> String { try decode([String: String].self, "set")["name"] ?? "" }
     func patch() throws -> ReminderPatch {
         let sets: [String: JSONValue] = values["set"].flatMap { if case .object(let object) = $0 { object } else { nil } } ?? [:]
         let clears = try values["clear"].map { _ in try decode([String].self, "clear") } ?? []
         guard Set(sets.keys).isDisjoint(with: clears), Set(clears).count == clears.count else { throw invalid("Duplicate or conflicting set/clear fields") }
+        let references = ["list", "parent", "section", "assignee"]
         var object = sets.mapValues { JSONValue.object(["set": .object(["_0": $0])]) }
         for key in clears { object[key] = .object(["clear": .object([:])]) }
+        for key in references { object[key + "ID"] = object.removeValue(forKey: key) }
         object["addImages"] = values["images"]; object["removeImageIDs"] = values["removeImageIDs"]
         let patch = try Arguments(values: ["patch": .object(object)]).decode(ReminderPatch.self, "patch")
         guard patch != ReminderPatch() else { throw invalid("edit requires a change") }; return patch
@@ -81,13 +89,12 @@ public enum FacadeOperations {
             try Validation.query(query); return .operation(.find(query))
         },
         .init("show", .read, "id", ["id": .string], "Show ID or native title-equals match, including an optimistic version token.") { .operation(.show($0.id)) },
-        .init("add", .additive, "title", ["title": .string, "list": .string, "fields": Shapes.fields, "images": Shapes.images], "Create a reminder in the supplied list, parent's list or unique default list. Images are base64 bytes, never worker paths.") { a in
-            let fields = try a.merged(ReminderFields(title: a.string("title"), listID: a.list), "fields")
-            guard fields.title == a.string("title"), a.text("list") == nil || fields.listID == a.list else { throw invalid("Conflicting create title/list identity") }
+        .init("add", .additive, "title", ["title": .string, "list": .string, "fields": Shapes.reminderCreate, "images": Shapes.images], "Create a reminder in the supplied list, parent's list or unique default list. Images are base64 bytes, never worker paths.") { a in
+            let fields = try a.mapped("fields", references: ["parent", "section", "assignee"]).merged(ReminderFields(title: a.string("title"), listID: a.list), "fields")
             let images = try a.values["images"].map { _ in try a.decode([ImageInput].self, "images") } ?? []
             try Validation.fields(fields, images: images, listRequired: false); return .operation(.create(ReminderDraft(fields: fields, images: images)))
         },
-        .init("edit", .replacing, "id", ["id": .string, "version": .string, "set": Shapes.fields, "clear": .array(.choice(Shapes.reminderFields.keys.sorted().joined(separator: " "))), "images": Shapes.images, "removeImageIDs": .array(.string)], required: "version", "Sparse edit: omitted fields stay unchanged; set values or explicitly clear. Requires latest version; not atomic cross-device CAS.") { try .operation(.update(id: $0.id, version: $0.version, patch: $0.patch())) },
+        .init("edit", .replacing, "id", ["id": .string, "version": .string, "set": Shapes.reminderSet, "clear": .array(.choice(Shapes.reminderClear)), "images": Shapes.images, "removeImageIDs": .array(.string)], required: "version", "Sparse edit: omitted fields stay unchanged; set values or explicitly clear. Requires latest version; not atomic cross-device CAS.") { try .operation(.update(id: $0.id, version: $0.version, patch: $0.patch())) },
         .init("done", .replacing, "id", ["id": .string, "version": .string, "undo": .bool], required: "version", "Complete reminder; undo=true marks incomplete. Requires version.") { .operation(.complete(id: $0.id, version: $0.version, completed: !$0.bool("undo"))) },
         .init("delete", .replacing, "id", ["id": .string, "version": .string], required: "version", "Soft-delete reminder and known children with journal evidence. Requires version; no purge.") { .operation(.delete(id: $0.id, version: $0.version)) },
         .init("deleted", .journal, "", [:], "Reconcile and prune this tool's persistent deletion journal (toolOnly), not system Recently Deleted.") { _ in .operation(.deleted) },
@@ -95,19 +102,20 @@ public enum FacadeOperations {
         .init("restore", .additive, "id", ["id": .string, "list": .string], "Restore root/children to saved destination or explicit list. Never retries uncertain saves.") { .operation(.restore(id: $0.id, list: $0.text("list"))) },
         .init("image", .read, "id imageID", ["id": .string, "imageID": .string], "Explicit image bytes read, returned as base64. May fail with native permission error; no prompt or invented permission fix.") { .operation(.image(reminderID: $0.id, imageID: $0.string("imageID"))) },
         .init("lists", .read, "", [:], "Read list metadata, default marker and already-joined members; no invitations.") { _ in .operation(.catalog(.lists)) },
-        .init("lists add", .additive, "name", ["name": .string, "fields": Shapes.list], "Create list with optional appearance, grouping and sorting fields.") { a in
-            let fields = try a.merged(ListFields(name: a.name), "fields")
-            guard fields.name == a.name else { throw invalid("Use name for list creation identity") }; return .operation(.list(.create(fields)))
+        .init("lists add", .additive, "name", ["name": .string, "fields": Shapes.listCreate], "Create list with optional appearance, grouping and sorting fields.") { a in
+            let fields = try a.mapped("fields", references: ["group"]).merged(ListFields(name: a.name), "fields")
+            return .operation(.list(.create(fields)))
         },
-        .init("lists edit", .replacing, "id", ["id": .string, "fields": Shapes.list, "clear": .array(.choice("color icon groupID"))], "Sparse list edit: omitted fields stay unchanged. Explicit clear accepts color/icon/groupID; omitted position never reorders.") { a in
-            let patch = try a.merged(ListPatch(), "fields"), clear = try a.values["clear"].map { _ in try a.decode([ListClear].self, "clear") } ?? []
+        .init("lists edit", .replacing, "id", ["id": .string, "set": Shapes.listSet, "clear": .array(.choice("color icon group"))], "Sparse list edit: omitted fields stay unchanged. Explicit clear accepts color/icon/group; omitted position never reorders.") { a in
+            let patch = try a.mapped("set", references: ["group"]).merged(ListPatch(), "set")
+            let clear = try (a.values["clear"].map { _ in try a.decode([String].self, "clear") } ?? []).map { ListClear(rawValue: $0 == "group" ? "groupID" : $0)! }
             try patch.validate(clear: clear); return .operation(.list(.update(a.id, patch, clear: clear)))
         },
         .init("lists delete", .replacing, "id", ["id": .string, "confirmed": .bool], required: "confirmed", "Delete list and contents; confirmed must be true. Journals selected reminders first.") { .operation(.list(.delete($0.id, confirmed: true))) },
         .init("lists clear-completed", .replacing, "id", ["id": .string, "confirmed": .bool], required: "confirmed", "Soft-delete completed reminders and selected parents' children; confirmed must be true.") { .operation(.list(.clearCompleted($0.id, confirmed: true))) },
         .init("groups", .read, "", [:], "Read groups.") { _ in .operation(.catalog(.groups)) },
         .init("groups add", .additive, "name", ["name": .string], "Create group.") { .operation(.group(.create($0.name))) },
-        .init("groups rename", .replacing, "id", ["id": .string, "name": .string], required: "name", "Rename group.") { .operation(.group(.rename($0.id, name: $0.name))) },
+        .init("groups edit", .replacing, "id", ["id": .string, "set": .fields(["name": .string], "name")], required: "set", "Rename group.") { try .operation(.group(.rename($0.id, name: $0.setName()))) },
         .init("groups delete", .replacing, "id", ["id": .string, "confirmed": .bool], required: "confirmed", "Delete empty group only; confirmed must be true.") { .operation(.group(.delete($0.id, confirmed: true))) },
         .init("sections", .read, "", ["list": .string], "Read sections, optionally scoped by list ID or exact name.") { .operation(.catalog(.sections, list: $0.text("list"))) },
         .init("sections add", .additive, "name", ["name": .string, "list": .string], required: "list", "Create section in list.") { .operation(.section(.create(list: $0.list, name: $0.name))) },
@@ -117,8 +125,8 @@ public enum FacadeOperations {
         },
         .init("sections delete", .replacing, "id", ["id": .string, "list": .string, "confirmed": .bool], required: "list confirmed", "Delete section in list; confirmed must be true.") { .operation(.section(.delete(list: $0.list, section: $0.id, confirmed: true))) },
         .init("tags", .read, "", [:], "Read native tag labels with open/total counts from their selected reminders.") { _ in .operation(.catalog(.tags)) },
-        .init("tags rename", .replacing, "id", ["id": .string, "name": .string], required: "name", "Rename a native-matched tag and report affected reminder receipts.") { .operation(.tag(.rename($0.id, name: $0.name))) },
-        .init("tags delete", .replacing, "id", ["id": .string, "confirmed": .bool], required: "confirmed", "Remove a native-matched tag from reminders; confirmed must be true.") { .operation(.tag(.delete($0.id, confirmed: true))) },
+        .init("tags edit", .replacing, "tag", ["tag": .string, "set": .fields(["name": .string], "name")], required: "set", "Rename a native-matched tag and report affected reminder receipts.") { try .operation(.tag(.rename($0.string("tag"), name: $0.setName()))) },
+        .init("tags delete", .replacing, "tag", ["tag": .string, "confirmed": .bool], required: "confirmed", "Remove a native-matched tag from reminders; confirmed must be true.") { .operation(.tag(.delete($0.string("tag"), confirmed: true))) },
         .init("smart-lists", .read, "", [:], "Read smart lists, preserving opaque unknown filters; lists with unknown filters are read-only.") { _ in .operation(.catalog(.smartLists)) },
         .init("smart-lists add", .additive, "name", ["name": .string, "definition": Shapes.smart], required: "definition", "Create native smart list; unsupported filter/account capabilities refuse explicitly.") { a in
             let smart = try a.merged(SmartList(id: "", name: a.name), "definition")

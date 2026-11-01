@@ -11,7 +11,7 @@ struct ParserTests {
         return command
     }
     @Test func creationWithComplexTypedFields() throws {
-        let args = ["add", "Trip", "--list", "Inbox", "--fields-json", #"{"due":{"kind":"date","value":{"year":2030,"month":2,"day":3}},"start":{"kind":"localDateTime","value":{"year":2030,"month":2,"day":2},"hour":9,"minute":30,"second":0},"recurrence":{"frequency":"monthly","interval":2,"weekdays":[{"day":2,"ordinal":1}],"monthDays":[],"months":[],"end":{"kind":"count","value":4}},"earlyAlerts":[{"before":1,"unit":"days"}],"location":{"kind":"place","title":"Station","latitude":31.2,"longitude":121.5,"radius":100,"when":"arriving"},"contact":{"phones":["+123456"],"emails":[]},"priority":"high","tags":["travel"],"parentID":"parent","sectionID":"section","position":{"kind":"after","value":"neighbor"},"assigneeID":"me","url":"https://example.com","flagged":true}"#]
+        let args = ["add", "Trip", "--list", "Inbox", "--fields-json", #"{"due":{"kind":"date","value":{"year":2030,"month":2,"day":3}},"start":{"kind":"localDateTime","value":{"year":2030,"month":2,"day":2},"hour":9,"minute":30,"second":0},"recurrence":{"frequency":"monthly","interval":2,"weekdays":[{"day":2,"ordinal":1}],"monthDays":[],"months":[],"end":{"kind":"count","value":4}},"earlyAlerts":[{"before":1,"unit":"days"}],"location":{"kind":"place","title":"Station","latitude":31.2,"longitude":121.5,"radius":100,"when":"arriving"},"contact":{"phones":["+123456"],"emails":[]},"priority":"high","tags":["travel"],"parent":"parent","section":"section","position":{"kind":"after","value":"neighbor"},"assignee":"me","url":"https://example.com","flagged":true}"#]
         guard case .create(let draft) = try command(args) else { throw CLIParser.invalid("Expected create") }
         #expect(draft.fields.title == "Trip")
         #expect(draft.fields.due == .date(CalendarDate(2030, 2, 3)))
@@ -22,12 +22,12 @@ struct ParserTests {
     }
     @Test func creationCanDeferListSelectionToCore() throws {
         #expect(try command(["add", "Title"]) == .create(ReminderDraft(fields: ReminderFields(title: "Title", listID: ""))))
-        #expect(try command(["add", "Child", "--fields-json", #"{"parentID":"P"}"#]) == .create(ReminderDraft(fields: ReminderFields(title: "Child", listID: "", parentID: "P"))))
+        #expect(try command(["add", "Child", "--fields-json", #"{"parent":"P"}"#]) == .create(ReminderDraft(fields: ReminderFields(title: "Child", listID: "", parentID: "P"))))
     }
     @Test func patchPreservesAbsentSetAndClear() throws {
         guard case .update(let id, let version, let patch) = try command([
             "edit", "id", "--version", "v1", "--set-json", #"{"flagged":false,"tags":[],"notes":""}"#,
-            "--clear", "due,location,assigneeID"
+            "--clear", "due,location,assignee"
         ]) else { throw CLIParser.invalid("Expected update") }
         #expect(id == "id"); #expect(version == "v1")
         #expect(patch.flagged == .set(false)); #expect(patch.notes == .set(""))
@@ -54,14 +54,14 @@ struct ParserTests {
     @Test func containerActionsAndRequiredConfirmation() throws {
         let samples: [[String]] = [
             ["lists"], ["lists", "add", "Inbox"],
-            ["lists", "edit", "L", "--fields-json", #"{"name":"New","pinned":true,"kind":"groceries","sort":"title"}"#],
-            ["lists", "edit", "L", "--fields-json", #"{"name":"Renamed"}"#], ["lists", "edit", "L", "--clear", "icon,groupID"],
+            ["lists", "edit", "L", "--set-json", #"{"name":"New","pinned":true,"kind":"groceries","sort":"title"}"#],
+            ["lists", "edit", "L", "--set-json", #"{"name":"Renamed"}"#], ["lists", "edit", "L", "--clear", "icon,group"],
             ["lists", "delete", "L", "--yes"], ["lists", "clear-completed", "L", "--yes"],
-            ["groups"], ["groups", "add", "Work"], ["groups", "rename", "G", "--name", "New"], ["groups", "delete", "G", "--yes"],
+            ["groups"], ["groups", "add", "Work"], ["groups", "edit", "G", "--set-json", #"{"name":"New"}"#], ["groups", "delete", "G", "--yes"],
             ["sections", "--list", "L"], ["sections", "add", "A", "--list", "L"],
             ["sections", "edit", "S", "--list", "L", "--set-json", #"{"name":"B","position":{"kind":"before","value":"other"}}"#],
             ["sections", "delete", "S", "--list", "L", "--yes"],
-            ["tags"], ["tags", "rename", "old", "--name", "new"], ["tags", "delete", "old", "--yes"],
+            ["tags"], ["tags", "edit", "old", "--set-json", #"{"name":"new"}"#], ["tags", "delete", "old", "--yes"],
             ["smart-lists"], ["smart-lists", "add", "A", "--definition-json", "{}"],
             ["smart-lists", "edit", "S", "--definition-json", #"{"id":"S","name":"A","match":"any","filters":[]}"#],
             ["smart-lists", "delete", "S", "--yes"], ["templates"],
