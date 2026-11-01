@@ -114,21 +114,32 @@ public enum Validation {
         if let icon = fields.icon { try name(icon) }
     }
     public static func filters(_ filters: [SmartFilter]) throws {
+        guard !filters.isEmpty else { throw Failure(.invalidInput, "Smart lists require at least one filter") }
+        var families = Set<String>()
         for filter in filters {
+            let family: String
             switch filter {
             case .unknown: throw Failure(.unsupported, "Unknown smart filters are read-only")
-            case .tags(let values, _): try tags(values)
+            case .tags(let values, _): family = "tags"; try tags(values)
             case .priorities(let values):
+                family = "priorities"
                 guard !values.contains(.none) else { throw Failure(.invalidInput, "Smart-filter priorities must be low, medium or high") }
             case .date(.range(let from, let before)):
+                family = "date"
+                guard from != nil || before != nil else { throw Failure(.invalidInput, "Date range needs a bound") }
                 if let from { try date(from) }; if let before { try date(before) }
                 if let from, let before, from >= before { throw Failure(.invalidInput, "Empty date range") }
             case .date(.relative(let past, let future, let unit)):
+                family = "date"
                 guard past >= 0, future >= 0, (past > 0) != (future > 0), unit != .minutes else {
                     throw Failure(.invalidInput, "Relative range requires one positive direction and hour/day/week/month units")
                 }
-            default: break
+            case .date: family = "date"
+            case .flagged: family = "flagged"
+            case .lists: family = "lists"
+            case .location: family = "location"
             }
+            guard families.insert(family).inserted else { throw Failure(.invalidInput, "Duplicate smart-filter family \(family)") }
         }
     }
 }

@@ -70,10 +70,6 @@ indirect enum Schema: Sendable {
         default: throw invalid("\(path): wrong JSON shape; null is not a clear operation")
         }
     }
-    func requiring(_ names: String) -> Self {
-        guard case .object(let fields, _) = self else { preconditionFailure("Expected object schema") }
-        return .fields(fields, names)
-    }
 }
 
 enum Shapes {
@@ -125,7 +121,9 @@ enum Shapes {
         "priorities": .fields(["value": .array(.choice("low medium high"))], "value"), "flagged": .fields(["value": .bool], "value"),
         "lists": .fields(["value": .array(.string)], "value"), "location": .fields(["value": .choice("none gettingInCar gettingOutOfCar")], "value"),
         "unknown": .fields(["key": .string, "payload": .string], "key payload")])
-    static let smart = Schema.fields(["id": .string, "name": .string, "color": .string, "icon": .string,
-        "match": .choice("all any"), "filters": .array(filter)])
+    static let smartFields: [String: Schema] = ["color": .string, "icon": .string,
+        "match": .choice("all any"), "filters": .array(filter)]
+    static let smartPatch = Schema.fields(smartFields.merging(["name": .string]) { _, new in new })
+    static let smart = Schema.fields(smartFields.merging(["id": .string, "name": .string]) { _, new in new })
     static let images = Schema.array(.fields(["fileName": .string, "contentType": .string, "bytes": .string], "fileName contentType bytes"))
 }

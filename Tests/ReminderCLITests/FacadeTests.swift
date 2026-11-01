@@ -30,8 +30,8 @@ struct FacadeTests {
             ("sections_delete", #"{"id":"S","list":"L","confirmed":true}"#, .operation(.section(.delete(list: "L", section: "S", confirmed: true)))),
             ("tags_edit", #"{"tag":"old","set":{"name":"new"}}"#, .operation(.tag(.rename("old", name: "new")))),
             ("tags_delete", #"{"tag":"tag","confirmed":true}"#, .operation(.tag(.delete("tag", confirmed: true)))),
-            ("smart_lists_add", #"{"name":"N","definition":{"filters":[{"kind":"flagged","value":true}]}}"#, .operation(.smartList(.create(SmartList(id: "", name: "N", filters: [.flagged(true)]))))),
-            ("smart_lists_edit", #"{"id":"S","definition":{"id":"S","name":"N","match":"all","filters":[]}}"#, .operation(.smartList(.update("S", SmartList(id: "S", name: "N"))))),
+            ("smart_lists_add", #"{"name":"N","fields":{"filters":[{"kind":"flagged","value":true}]}}"#, .operation(.smartList(.create(SmartListDraft(name: "N", filters: [.flagged(true)]))))),
+            ("smart_lists_edit", #"{"id":"S","set":{"name":"N"}}"#, .operation(.smartList(.update("S", { var p = SmartListPatch(); p.name = "N"; return p }(), clear: [])))),
             ("smart_lists_delete", #"{"id":"S","confirmed":true}"#, .operation(.smartList(.delete("S", confirmed: true)))),
             ("templates_add", #"{"name":"N","list":"L","includeCompleted":true}"#, .operation(.template(.create(name: "N", list: "L", includeCompleted: true)))),
             ("templates_use", #"{"id":"T","name":"N"}"#, .operation(.template(.use("T", newListName: "N")))),
@@ -111,7 +111,18 @@ struct FacadeTests {
         }
         #expect(throws: Failure.self) { try FacadeOperations.prepare("lists_add", arguments: arguments(#"{"name":"N","fields":{"name":"N"}}"#)) }
     }
-    @Test func schemaRejectsUnknownNullInternalEnumsAndMissingReplacementFields() throws {
+    @Test func sparseSmartListInputsKeepOmissionsAndRejectUnsafeChanges() throws {
+        let rename = try FacadeOperations.prepare("smart_lists_edit", arguments: arguments(#"{"id":"S","set":{"name":"Renamed"}}"#))
+        guard case .operation(.smartList(.update(let id, let patch, let clear))) = rename else { throw invalid("Expected smart edit") }
+        #expect(id == "S"); #expect(patch.name == "Renamed"); #expect(clear.isEmpty)
+        #expect(patch.match == nil); #expect(patch.filters == nil); #expect(patch.color == nil)
+        #expect(try FacadeOperations.prepare("smart_lists_edit", arguments: arguments(#"{"id":"S","clear":["color","icon"]}"#)) == .operation(.smartList(.update("S", SmartListPatch(), clear: [.color, .icon]))))
+        #expect(throws: Failure.self) { try FacadeOperations.prepare("smart_lists_edit", arguments: arguments(#"{"id":"S","set":{"color":"red"},"clear":["color"]}"#)) }
+        #expect(throws: Failure.self) { try FacadeOperations.prepare("smart_lists_edit", arguments: arguments(#"{"id":"S","clear":["icon","icon"]}"#)) }
+        #expect(throws: Failure.self) { try FacadeOperations.prepare("smart_lists_edit", arguments: arguments(#"{"id":"S","set":{"filters":[]}}"#)) }
+        #expect(throws: Failure.self) { try FacadeOperations.prepare("smart_lists_add", arguments: arguments(#"{"name":"N","fields":{"filters":[{"kind":"flagged","value":true},{"kind":"flagged","value":false}]}}"#)) }
+    }
+    @Test func schemaRejectsUnknownNullInternalEnumsAndInvalidFields() throws {
         let samples: [(String, String)] = [
             ("setup", "{}"), ("show", #"{"id":"R","setup":true}"#), ("show", #"{"id":null}"#),
             ("edit", #"{"id":"R","version":"V","set":{"notes":null}}"#),
@@ -122,18 +133,23 @@ struct FacadeTests {
             ("lists_edit", #"{"id":"L","set":{"color":"red"},"clear":["color"]}"#),
             ("lists_edit", #"{"id":"L","clear":["icon","icon"]}"#), ("lists_edit", #"{"id":"L","clear":["name"]}"#),
             ("lists_edit", #"{"id":"L","set":{"color":null}}"#),
-            ("smart_lists_edit", #"{"id":"S","definition":{"name":"N"}}"#),
-            ("smart_lists_add", #"{"name":"N","definition":{"filters":[{"kind":"unknown","key":"x","payload":"AQ=="}]}}"#),
+            ("smart_lists_edit", #"{"id":"S","set":{}}"#),
+            ("smart_lists_edit", #"{"id":"S","set":{"color":null}}"#),
+            ("smart_lists_edit", #"{"id":"S","set":{"id":"S"}}"#),
+            ("smart_lists_add", #"{"name":"N","fields":{"name":"N","filters":[{"kind":"flagged","value":true}]}}"#),
+            ("smart_lists_add", #"{"name":"N","fields":{"id":"S","filters":[{"kind":"flagged","value":true}]}}"#),
+            ("smart_lists_add", #"{"name":"N","fields":{}}"#),
+            ("smart_lists_add", #"{"name":"N","fields":{"filters":[{"kind":"unknown","key":"x","payload":"AQ=="}]}}"#),
             ("find", #"{"query":{}}"#), ("find", #"{"scope":"title"}"#), ("find", #"{"limit":1.5}"#), ("find", #"{"limit":0}"#),
             ("find", #"{"offset":-1}"#), ("find", #"{"text":"   "}"#),
             ("find", #"{"matching":"exact"}"#), ("find", #"{"matching":"bad","text":"x"}"#),
             ("find", #"{"smartList":"S","flagged":false}"#),
             ("find", #"{"smartList":"S","completed":true}"#),
-            ("smart_lists_add", #"{"name":"N","definition":{"filters":[{"kind":"time","fromHour":8,"fromMinute":0,"toHour":17,"toMinute":0}]}}"#),
-            ("smart_lists_add", #"{"name":"N","definition":{"filters":[{"kind":"date","value":{"kind":"overdue"}}]}}"#),
-            ("smart_lists_add", #"{"name":"N","definition":{"filters":[{"kind":"location","value":"arriving"}]}}"#),
-            ("smart_lists_add", #"{"name":"N","definition":{"filters":[{"kind":"priorities","value":["none"]}]}}"#),
-            ("smart_lists_add", #"{"name":"N","definition":{"filters":[{"kind":"date","value":{"kind":"relative","past":0,"future":1,"unit":"minutes"}}]}}"#),
+            ("smart_lists_add", #"{"name":"N","fields":{"filters":[{"kind":"time","fromHour":8,"fromMinute":0,"toHour":17,"toMinute":0}]}}"#),
+            ("smart_lists_add", #"{"name":"N","fields":{"filters":[{"kind":"date","value":{"kind":"overdue"}}]}}"#),
+            ("smart_lists_add", #"{"name":"N","fields":{"filters":[{"kind":"location","value":"arriving"}]}}"#),
+            ("smart_lists_add", #"{"name":"N","fields":{"filters":[{"kind":"priorities","value":["none"]}]}}"#),
+            ("smart_lists_add", #"{"name":"N","fields":{"filters":[{"kind":"date","value":{"kind":"relative","past":0,"future":1,"unit":"minutes"}}]}}"#),
             ("find", #"{"section":"S"}"#), ("find", #"{"tags":[""]}"#),
             ("find", #"{"text":"fish","scope":"title"}"#),
             ("find", #"{"tagMatch":"any"}"#), ("find", #"{"tagMatch":"bad","tags":["x"]}"#),

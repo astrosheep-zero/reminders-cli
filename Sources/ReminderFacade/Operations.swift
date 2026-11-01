@@ -27,7 +27,7 @@ public struct OperationDefinition: Sendable {
     /// CLI names adapt the same parameters; no separate command allowlist or dispatch switch.
     public var options: [String: String] {
         var result = Dictionary(uniqueKeysWithValues: fields.keys.filter { !positional.contains($0) && $0 != "images" }.map { key in
-            let option = ["fields": "fields-json", "set": "set-json", "definition": "definition-json",
+            let option = ["fields": "fields-json", "set": "set-json",
                 "position": "position-json", "confirmed": "yes", "includeCompleted": "include-completed", "removeImageIDs": "remove-images"][key] ?? key
             if name == "find" {
                 let kebab = key.reduce(into: "") { result, char in
@@ -128,11 +128,14 @@ public enum FacadeOperations {
         .init("tags edit", .replacing, "tag", ["tag": .string, "set": .fields(["name": .string], "name")], required: "set", "Rename a native-matched tag and report affected reminder receipts.") { try .operation(.tag(.rename($0.string("tag"), name: $0.setName()))) },
         .init("tags delete", .replacing, "tag", ["tag": .string, "confirmed": .bool], required: "confirmed", "Remove a native-matched tag from reminders; confirmed must be true.") { .operation(.tag(.delete($0.string("tag"), confirmed: true))) },
         .init("smart-lists", .read, "", [:], "Read smart lists, preserving opaque unknown filters; lists with unknown filters are read-only.") { _ in .operation(.catalog(.smartLists)) },
-        .init("smart-lists add", .additive, "name", ["name": .string, "definition": Shapes.smart], required: "definition", "Create native smart list; unsupported filter/account capabilities refuse explicitly.") { a in
-            let smart = try a.merged(SmartList(id: "", name: a.name), "definition")
-            guard smart.id.isEmpty, smart.name == a.name else { throw invalid("New smart-list identity belongs in name; id must be empty") }; return .operation(.smartList(.create(smart)))
+        .init("smart-lists add", .additive, "name", ["name": .string, "fields": .fields(Shapes.smartFields, "filters")], required: "fields", "Create native smart list with nonempty filters; match defaults to all. Unsupported filter/account capabilities refuse explicitly.") { a in
+            let smart = try a.merged(SmartListDraft(name: a.name, filters: []), "fields")
+            try Validation.filters(smart.filters); return .operation(.smartList(.create(smart)))
         },
-        .init("smart-lists edit", .replacing, "id", ["id": .string, "definition": Shapes.smart.requiring("id name match filters")], required: "definition", "Full replacement requires id/name/match/filters; unknown native filters cannot be erased.") { try .operation(.smartList(.update($0.id, $0.decode(SmartList.self, "definition")))) },
+        .init("smart-lists edit", .replacing, "id", ["id": .string, "set": Shapes.smartPatch, "clear": .array(.choice("color icon"))], "Sparse local read/merge/save, not atomic CAS: omissions stay unchanged; clear accepts color/icon. Lists with unknown filters refuse even rename-only edits.") { a in
+            let patch = try a.merged(SmartListPatch(), "set"), clear = try a.values["clear"].map { _ in try a.decode([SmartListClear].self, "clear") } ?? []
+            try patch.validate(clear: clear); return .operation(.smartList(.update(a.id, patch, clear: clear)))
+        },
         .init("smart-lists delete", .replacing, "id", ["id": .string, "confirmed": .bool], required: "confirmed", "Delete smart list; confirmed must be true.") { .operation(.smartList(.delete($0.id, confirmed: true))) },
         .init("templates", .read, "", [:], "Read native templates.") { _ in .operation(.catalog(.templates)) },
         .init("templates add", .additive, "name", ["name": .string, "list": .string, "includeCompleted": .bool], required: "list", "Create template from list; includeCompleted defaults false.") { .operation(.template(.create(name: $0.name, list: $0.list, includeCompleted: $0.bool("includeCompleted")))) },

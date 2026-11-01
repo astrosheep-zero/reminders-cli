@@ -4,10 +4,23 @@ import ReminderCore
 /// Stored ReminderKit filter schema. Unknown fields remain opaque bytes on reads;
 /// they are never dropped, evaluated in Swift, or sent back as guessed edits.
 enum SmartFilters {
-    static func data(_ smart: SmartList) throws -> Data {
-        try Validation.filters(smart.filters)
-        var root: [String: Any] = ["operation": smart.match == .all ? "and" : "or"]
-        for filter in smart.filters {
+    static func changes(_ patch: SmartListPatch, clear: [SmartListClear]) throws -> [String: Any] {
+        try patch.validate(clear: clear)
+        var result: [String: Any] = [:]
+        if let name = patch.name { result["name"] = name }
+        if let color = patch.color { result["color"] = try Translation.color(color) }
+        if let icon = patch.icon { result["icon"] = icon }
+        for field in clear { result[field.rawValue] = NSNull() }
+        if patch.match != nil || patch.filters != nil {
+            guard let match = patch.match, let filters = patch.filters else { throw Failure(.invalidInput, "Smart-filter edit requires Core's merged definition") }
+            result["filterData"] = try data(filters, match: match)
+        }
+        return result
+    }
+    static func data(_ filters: [SmartFilter], match: MatchMode = .all) throws -> Data {
+        try Validation.filters(filters)
+        var root: [String: Any] = ["operation": match == .all ? "and" : "or"]
+        for filter in filters {
             let pair: (String, Any)
             switch filter {
             case .unknown: throw Failure(.unsupported, "Editing unknown native smart-filter fields is unsupported")
@@ -24,10 +37,8 @@ enum SmartFilters {
                 case .gettingOutOfCar: pair = ("location", ["vehicle": "disconnected"])
                 }
             }
-            guard root[pair.0] == nil else { throw Failure(.invalidInput, "Duplicate native smart-filter family \(pair.0)") }
             root[pair.0] = pair.1
         }
-        guard root.count > 1 else { throw Failure(.invalidInput, "Smart lists require at least one filter") }
         return try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])
     }
     static func storedDay(_ day: CalendarDate) -> String { String(format: "%02d-%02d-%04d", day.day, day.month, day.year) }

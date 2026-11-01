@@ -82,7 +82,7 @@ BOOL RNPreflight(NSArray<NSString *> *features, NSError **error) {
             @"section.move": @"REMListSectionContextChangeItem setUnsavedSectionIDsOrdering: v @; REMListSectionContextChangeItem setShouldUpdateSectionsOrdering: v B",
             @"section.delete": @"REMListSectionChangeItem removeFromList v",
             @"smart.create": @"REMSaveRequest addCustomSmartListWithName:toAccountChangeItem:smartListObjectID: @ @ @ @",
-            @"smart.update": @"REMSmartListStorage setFilterData: v @; REMSmartListCustomContextChangeItem setName: v @; REMSmartListStorage setMinimumSupportedVersion: v q; REMSmartListStorage setEffectiveMinimumSupportedVersion: v q",
+            @"smart.update": @"REMSmartListStorage setFilterData: v @; REMSmartListCustomContextChangeItem setName: v @; REMSmartListCustomContextChangeItem setColor: v @; REMSmartListCustomContextChangeItem setBadge: v @; REMSmartListStorage setMinimumSupportedVersion: v q; REMSmartListStorage setEffectiveMinimumSupportedVersion: v q",
             @"smart.delete": @"REMSmartListChangeItem removeFromParentWithAccountChangeItem: v @",
             @"smart.find": @"REMRemindersListDataView_CustomSmartListInvocation initWithFetchResultTokenToDiffAgainst: @ @; REMStore resultFromPerformingSwiftInvocation:parametersData:storages:error: @ @ @ @ ^@",
             @"template.create": @"REMTemplateConfiguration initWithSourceListID:shouldSaveCompleted: @ @ B; REMSaveRequest addTemplateWithName:configuration:toAccountChangeItem: @ @ @ @",

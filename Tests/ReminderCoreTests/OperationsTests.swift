@@ -10,7 +10,7 @@ private final class MemoryBackend: ReminderBackend {
                                ReminderList(id: "L2", fields: ListFields(name: "Work"))],
                        groups: [NamedEntity(id: "G1", name: "Group")],
                        sections: [Section(id: "S1", name: "First", listID: "L1"), Section(id: "S2", name: "Second", listID: "L1")],
-                       tags: [Tag(name: "work")], smartLists: [SmartList(id: "SM1", name: "Smart")],
+                       tags: [Tag(name: "work")], smartLists: [SmartList(id: "SM1", name: "Smart", filters: [.flagged(true)])],
                        templates: [NamedEntity(id: "T1", name: "Template")])
     var unsupported = false
     var readError: Failure?
@@ -29,7 +29,9 @@ private final class MemoryBackend: ReminderBackend {
     var detachRestoredChild = false
     var restoreAuxiliaryIDs: [String] = []
     var restoreParentIDs: [String?] = []
+    var preflight: ((Command) throws -> Void)?
     func checkSupport(for command: Command) throws {
+        try preflight?(command)
         if unsupported { throw Failure(.unsupported, "Missing native selector") }
     }
     var catalogScopes: [Set<CatalogScope>] = []
@@ -412,7 +414,7 @@ struct OperationsTests {
                 .date(.relative(past: -1, future: 1, unit: .hours))]
             let engine = Operations(backend: backend, journalURL: url)
             for filter in filters {
-                #expect(engine.execute(.smartList(.create(SmartList(id: "", name: "Invalid", filters: [filter])))).error?.code == .invalidInput)
+                #expect(engine.execute(.smartList(.create(SmartListDraft(name: "Invalid", filters: [filter])))).error?.code == .invalidInput)
             }
             #expect(backend.mutationCalls == 0); #expect(backend.catalogScopes.isEmpty)
         }
@@ -624,6 +626,57 @@ struct OperationsTests {
             #expect(try Data(contentsOf: url) == before)
         }
     }
+    @Test func smartEditsPreserveOmissionsAndMergeOnlySubmittedFilterChanges() throws {
+        try fixture { backend, url in
+            let current = SmartList(id: "SM1", name: "Smart", color: "red", icon: "star", match: .any, filters: [.flagged(true), .lists(["L1"])])
+            backend.data.smartLists = [current]
+            let engine = Operations(backend: backend, journalURL: url)
+            var patch = SmartListPatch(); patch.name = "Renamed"
+            let renamed = try patch.applying(to: current)
+            #expect(renamed.match == .any); #expect(renamed.filters == current.filters); #expect(renamed.icon == "star")
+            #expect(engine.execute(.smartList(.update("Smart", patch, clear: []))).status == .ok)
+            #expect(backend.actions.last == .smartList(.update("SM1", patch, clear: [])))
+            #expect(engine.execute(.smartList(.update("sm1", SmartListPatch(), clear: [.color, .icon]))).status == .ok)
+            #expect(backend.actions.last == .smartList(.update("SM1", SmartListPatch(), clear: [.color, .icon])))
+            let cleared = try SmartListPatch().applying(to: current, clear: [.color, .icon])
+            #expect(cleared.color == nil); #expect(cleared.icon == nil); #expect(cleared.filters == current.filters); #expect(cleared.match == .any)
+            patch = SmartListPatch(); patch.filters = [.lists(["Work"])]
+            #expect(engine.execute(.smartList(.update("Smart", patch, clear: []))).status == .ok)
+            patch.filters = [.lists(["L2"])]; patch.match = .any
+            #expect(backend.actions.last == .smartList(.update("SM1", patch, clear: [])))
+            patch = SmartListPatch(); patch.match = .all
+            #expect(engine.execute(.smartList(.update("Smart", patch, clear: []))).status == .ok)
+            patch.filters = current.filters
+            #expect(backend.actions.last == .smartList(.update("SM1", patch, clear: [])))
+            #expect(backend.mutationCalls == 4); #expect(backend.catalogScopes.count == 4)
+        }
+    }
+    @Test func smartEditSafetyAndResolvedPreflightRefuseBeforeMutation() throws {
+        try fixture { backend, url in
+            var marked = false
+            let engine = Operations(backend: backend, journalURL: url, onMutation: { marked = true })
+            #expect(engine.execute(.smartList(.update("Smart", SmartListPatch(), clear: []))).error?.code == .invalidInput)
+            var patch = SmartListPatch(); patch.filters = []
+            #expect(engine.execute(.smartList(.update("Smart", patch, clear: []))).error?.code == .invalidInput)
+            patch.filters = [.flagged(true), .flagged(false)]
+            #expect(engine.execute(.smartList(.update("Smart", patch, clear: []))).error?.code == .invalidInput)
+            patch = SmartListPatch(); patch.name = "Renamed"
+            backend.data.smartLists[0].filters.append(.unknown(key: "future", payload: Data([1])))
+            #expect(engine.execute(.smartList(.update("Smart", patch, clear: []))).error?.code == .unsupported)
+            patch.filters = [.flagged(false)]
+            #expect(engine.execute(.smartList(.update("Smart", patch, clear: []))).error?.code == .unsupported)
+            backend.data.smartLists[0].filters = [.flagged(true)]
+            patch = SmartListPatch(); patch.match = .any
+            backend.preflight = { command in
+                if case .smartList(.update("SM1", let resolved, _)) = command {
+                    #expect(resolved.filters == [.flagged(true)]); #expect(resolved.match == .any)
+                    throw Failure(.unsupported, "Resolved preflight refused")
+                }
+            }
+            #expect(engine.execute(.smartList(.update("Smart", patch, clear: []))).error?.code == .unsupported)
+            #expect(!marked); #expect(backend.mutationCalls == 0)
+        }
+    }
     @Test func sparseSectionEditResolvesWithinListAndMutatesOnce() throws {
         try fixture { backend, url in
             backend.data.sections.append(Section(id: "OTHER", name: "First", listID: "L2"))
@@ -679,8 +732,8 @@ struct OperationsTests {
                 .section(.update(list: "Inbox", section: "First", patch: SectionPatch(name: "N", position: .after("Second")))),
                 .section(.delete(list: "Inbox", section: "First", confirmed: true)),
                 .tag(.rename("work", name: "home")), .tag(.delete("work", confirmed: true)),
-                .smartList(.create(SmartList(id: "", name: "New", filters: [.flagged(true)]))),
-                .smartList(.update("Smart", SmartList(id: "SM1", name: "Renamed"))), .smartList(.delete("Smart", confirmed: true)),
+                .smartList(.create(SmartListDraft(name: "New", filters: [.flagged(true)]))),
+                .smartList(.update("Smart", { var p = SmartListPatch(); p.name = "Renamed"; return p }(), clear: [])), .smartList(.delete("Smart", confirmed: true)),
                 .template(.create(name: "Saved", list: "Inbox", includeCompleted: true)),
                 .template(.use("Template", newListName: "From Template")), .template(.delete("Template", confirmed: true))
             ]
@@ -697,7 +750,7 @@ struct OperationsTests {
             #expect(backend.mutationCalls == count)
             let unknown = SmartFilter.unknown(key: "future", payload: Data([1, 2, 3]))
             #expect(try JSONDecoder().decode(SmartFilter.self, from: JSONEncoder().encode(unknown)) == unknown)
-            #expect(engine.execute(.smartList(.create(SmartList(id: "", name: "Unknown", filters: [unknown])))).error?.code == .unsupported)
+            #expect(engine.execute(.smartList(.create(SmartListDraft(name: "Unknown", filters: [unknown])))).error?.code == .unsupported)
         }
     }
     @Test func restoringSavedChildPreflightsActualParentAndPreservesEvidenceOnRefusal() throws {

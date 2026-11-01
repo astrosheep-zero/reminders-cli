@@ -46,7 +46,14 @@ private final class OfflineBridge: RNBridge {
     override func defaultList() throws -> String { defaultReads += 1; return "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB" }
     override func groups() throws -> [[String: Any]] { catalogReads.append(.groups); return [] }
     var smartError: Error?
-    override func smartLists() throws -> [[String: Any]] { catalogReads.append(.smartLists); if let smartError { throw smartError }; return [] }
+    var smartRows: [[String: Any]] = []
+    var smartUpdates: [(String, [AnyHashable: Any])] = []
+    override func smartLists() throws -> [[String: Any]] { catalogReads.append(.smartLists); if let smartError { throw smartError }; return smartRows }
+    override func updateSmartList(_ identifier: String, changes: [AnyHashable: Any]) throws {
+        smartUpdates.append((identifier, changes))
+        let index = smartRows.firstIndex { $0["id"] as? String == identifier }!
+        for (key, value) in changes { smartRows[index][key as! String] = value is NSNull ? nil : value }
+    }
     override func sections(inList listID: String?) throws -> [[String: Any]] {
         catalogReads.append(.sections); sectionLists.append(listID)
         return [["id": "CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC", "name": "Section", "listID": "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB"]]
@@ -99,6 +106,38 @@ struct NativeBackendTests {
     }
     private func backend(_ bridge: OfflineBridge) -> NativeReminderBackend {
         NativeReminderBackend(openBridge: { bridge }, permission: { "fullAccess" })
+    }
+    @Test func coreSparseSmartEditsPreserveFilterBytesInSingleNativeCalls() throws {
+        let bridge = OfflineBridge()
+        let data = try SmartFilters.data([.flagged(true), .lists([list])], match: .any)
+        bridge.smartRows = [["id": root, "name": "Smart", "color": ["hex": "#FF0000"], "icon": "star", "filterData": data]]
+        let engine = Operations(backend: backend(bridge))
+        var patch = SmartListPatch(); patch.name = "Renamed"
+        #expect(engine.execute(.smartList(.update("Smart", patch, clear: []))).status == .ok)
+        #expect(bridge.smartUpdates.count == 1); #expect(bridge.smartUpdates[0].0 == root)
+        #expect(bridge.smartUpdates[0].1 as NSDictionary == ["name": "Renamed"] as NSDictionary)
+        #expect(engine.execute(.smartList(.update(root, SmartListPatch(), clear: [.color, .icon]))).status == .ok)
+        #expect(bridge.smartUpdates.count == 2)
+        #expect(bridge.smartUpdates[1].1 as NSDictionary == ["color": NSNull(), "icon": NSNull()] as NSDictionary)
+        #expect(bridge.smartRows[0]["filterData"] as? Data == data)
+        let read = try SmartFilters.decode(bridge.smartRows[0])
+        #expect(read.match == .any); #expect(read.filters == [.flagged(true), .lists([list])])
+        #expect(read.name == "Renamed"); #expect(read.color == nil); #expect(read.icon == nil)
+    }
+    @Test func coreSmartFilterChangesUseMergedDefinitionAndOneNativeCall() throws {
+        let bridge = OfflineBridge()
+        bridge.smartRows = [["id": root, "name": "Smart", "icon": "star", "filterData": try SmartFilters.data([.flagged(true)], match: .any)]]
+        let engine = Operations(backend: backend(bridge))
+        var patch = SmartListPatch(); patch.filters = [.lists(["Inbox"])]
+        #expect(engine.execute(.smartList(.update("Smart", patch, clear: []))).status == .ok)
+        #expect(bridge.smartUpdates.count == 1); #expect(Set(bridge.smartUpdates[0].1.keys) == ["filterData"])
+        var read = try SmartFilters.decode(bridge.smartRows[0])
+        #expect(read.match == .any); #expect(read.filters == [.lists([list])]); #expect(read.icon == "star")
+        patch = SmartListPatch(); patch.match = .all
+        #expect(engine.execute(.smartList(.update(root, patch, clear: []))).status == .ok)
+        #expect(bridge.smartUpdates.count == 2); #expect(Set(bridge.smartUpdates[1].1.keys) == ["filterData"])
+        read = try SmartFilters.decode(bridge.smartRows[0])
+        #expect(read.match == .all); #expect(read.filters == [.lists([list])]); #expect(read.name == "Smart")
     }
     @Test func findUsesNativeCriteriaOrderAndPaginationWithoutLocalFiltering() throws {
         let bridge = OfflineBridge()

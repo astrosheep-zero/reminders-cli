@@ -353,6 +353,40 @@ public enum SmartFilter: Codable, Sendable, Equatable {
     /// Read preservation only; the backend must not reinterpret unknown native payloads.
     case unknown(key: String, payload: Data)
 }
+public struct SmartListDraft: Codable, Sendable, Equatable {
+    public var name: String
+    public var color: String?, icon: String?
+    public var match: MatchMode
+    public var filters: [SmartFilter]
+    public init(name: String, color: String? = nil, icon: String? = nil, match: MatchMode = .all, filters: [SmartFilter]) {
+        self.name = name; self.color = color; self.icon = icon; self.match = match; self.filters = filters
+    }
+}
+public enum SmartListClear: String, Codable, Sendable { case color, icon }
+public struct SmartListPatch: Codable, Sendable, Equatable {
+    public var name: String?, color: String?, icon: String?
+    public var match: MatchMode?
+    public var filters: [SmartFilter]?
+    public init() {}
+    public func validate(clear: [SmartListClear]) throws {
+        guard self != SmartListPatch() || !clear.isEmpty else { throw Failure(.invalidInput, "Smart-list edit requires a change") }
+        let supplied: [SmartListClear: String] = [.color: color, .icon: icon].compactMapValues { $0 }
+        guard Set(clear).count == clear.count, Set(clear).isDisjoint(with: supplied.keys) else {
+            throw Failure(.invalidInput, "Duplicate or conflicting set/clear fields")
+        }
+        try Validation.list(ListFields(name: name ?? "Smart list", color: color, icon: icon))
+        if let filters { try Validation.filters(filters) }
+    }
+    public func applying(to old: SmartList, clear: [SmartListClear] = []) throws -> SmartListDraft {
+        try validate(clear: clear)
+        let result = SmartListDraft(name: name ?? old.name,
+            color: clear.contains(.color) ? nil : color ?? old.color, icon: clear.contains(.icon) ? nil : icon ?? old.icon,
+            match: match ?? old.match, filters: filters ?? old.filters)
+        try Validation.list(ListFields(name: result.name, color: result.color, icon: result.icon))
+        try Validation.filters(result.filters)
+        return result
+    }
+}
 public struct SmartList: Codable, Sendable, Equatable {
     public var id: String
     public var name: String

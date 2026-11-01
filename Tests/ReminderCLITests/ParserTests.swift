@@ -48,8 +48,10 @@ struct ParserTests {
         }
         let filters: [SmartFilter] = [.tags(["work"], match: .all), .date(.relative(past: 0, future: 7, unit: .days)), .priorities([.high]), .flagged(true), .lists(["L"]), .location(.gettingInCar)]
         let text = #"[{"kind":"tags","value":["work"],"match":"all"},{"kind":"date","value":{"kind":"relative","past":0,"future":7,"unit":"days"}},{"kind":"priorities","value":["high"]},{"kind":"flagged","value":true},{"kind":"lists","value":["L"]},{"kind":"location","value":"gettingInCar"}]"#
-        guard case .smartList(.create(let smart)) = try command(["smart-lists", "add", "Today", "--definition-json", "{\"filters\":\(text)}"]) else { throw CLIParser.invalid("Expected smart list") }
-        #expect(smart.filters == filters); #expect(smart.name == "Today")
+        guard case .smartList(.create(let smart)) = try command(["smart-lists", "add", "Today", "--fields-json", "{\"filters\":\(text)}"]) else { throw CLIParser.invalid("Expected smart list") }
+        #expect(smart.filters == filters); #expect(smart.name == "Today"); #expect(smart.match == .all)
+        var rename = SmartListPatch(); rename.name = "Renamed"
+        #expect(try command(["smart-lists", "edit", "S", "--set-json", #"{"name":"Renamed"}"#, "--clear", "color,icon"]) == .smartList(.update("S", rename, clear: [.color, .icon])))
     }
     @Test func containerActionsAndRequiredConfirmation() throws {
         let samples: [[String]] = [
@@ -62,8 +64,8 @@ struct ParserTests {
             ["sections", "edit", "S", "--list", "L", "--set-json", #"{"name":"B","position":{"kind":"before","value":"other"}}"#],
             ["sections", "delete", "S", "--list", "L", "--yes"],
             ["tags"], ["tags", "edit", "old", "--set-json", #"{"name":"new"}"#], ["tags", "delete", "old", "--yes"],
-            ["smart-lists"], ["smart-lists", "add", "A", "--definition-json", "{}"],
-            ["smart-lists", "edit", "S", "--definition-json", #"{"id":"S","name":"A","match":"any","filters":[]}"#],
+            ["smart-lists"], ["smart-lists", "add", "A", "--fields-json", #"{"filters":[{"kind":"flagged","value":true}]}"#],
+            ["smart-lists", "edit", "S", "--set-json", #"{"match":"any"}"#],
             ["smart-lists", "delete", "S", "--yes"], ["templates"],
             ["templates", "add", "T", "--list", "L", "--include-completed"],
             ["templates", "use", "T", "--name", "New list"], ["templates", "delete", "T", "--yes"]

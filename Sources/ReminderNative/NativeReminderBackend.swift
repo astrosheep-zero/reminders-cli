@@ -81,10 +81,13 @@ public final class NativeReminderBackend: ReminderBackend {
                 features = ["reminder.update"] + Array(try Translation.patch(patch).keys)
                 for image in patch.addImages { _ = try ImageStaging.validate(image) }
                 if !patch.addImages.isEmpty { features.append("addImages") }
-            case .smartList(.create(let smart)), .smartList(.update(_, let smart)):
-                _ = try SmartFilters.data(smart); _ = try Translation.color(smart.color)
+            case .smartList(.create(let smart)):
+                _ = try SmartFilters.data(smart.filters, match: smart.match); _ = try Translation.color(smart.color)
+                features = ["smart.create", "smart.update", "appearance"]
+            case .smartList(.update(_, let patch, let clear)):
+                try patch.validate(clear: clear); _ = try Translation.color(patch.color)
+                if let filters = patch.filters { _ = try SmartFilters.data(filters, match: patch.match ?? .all) }
                 features = ["smart.update", "appearance"]
-                if case .smartList(.create) = command { features.append("smart.create") }
             case .list(.create(let fields)):
                 _ = try Translation.listFields(fields); features = ["list.create", "list.update", "appearance"]
             case .list(.update(_, let patch, _)):
@@ -392,12 +395,13 @@ public final class NativeReminderBackend: ReminderBackend {
     public func smartList(_ action: SmartListAction) throws -> MutationResult {
         try serialized {
             let native = try store()
-            func fields(_ smart: SmartList) throws -> [String: Any] {
-                ["name": smart.name, "filterData": try SmartFilters.data(smart), "color": try Translation.color(smart.color) as Any? ?? NSNull(), "icon": smart.icon as Any? ?? NSNull()]
-            }
             switch action {
-            case .create(let smart): return MutationResult(affectedIDs: [try native.createSmartList(smart.name, changes: fields(smart))])
-            case .update(let id, let smart): try native.updateSmartList(id, changes: fields(smart)); return MutationResult(affectedIDs: [id])
+            case .create(let smart):
+                let fields: [String: Any] = ["filterData": try SmartFilters.data(smart.filters, match: smart.match),
+                    "color": try Translation.color(smart.color) as Any? ?? NSNull(), "icon": smart.icon as Any? ?? NSNull()]
+                return MutationResult(affectedIDs: [try native.createSmartList(smart.name, changes: fields)])
+            case .update(let id, let patch, let clear):
+                try native.updateSmartList(id, changes: SmartFilters.changes(patch, clear: clear)); return MutationResult(affectedIDs: [id])
             case .delete(let id, let confirmed):
                 guard confirmed else { throw Failure(.invalidInput, "Smart-list deletion needs confirmation") }
                 try native.deleteSmartList(id); return MutationResult(affectedIDs: [id])

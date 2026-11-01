@@ -421,24 +421,28 @@ public final class Operations: @unchecked Sendable {
         let scopes: Set<CatalogScope>
         switch input { case .create: scopes = [.lists]; case .update: scopes = [.lists, .smartLists]; case .delete: scopes = [.smartLists] }
         let catalog = try backend.catalog(scopes); let action: SmartListAction
-        func definition(_ original: SmartList) throws -> SmartList {
-            var result = original; try Validation.name(result.name); try Validation.filters(result.filters)
-            result.filters = try result.filters.map { filter in
+        func filters(_ submitted: [SmartFilter]) throws -> [SmartFilter] {
+            try submitted.map { filter in
                 if case .lists(let lists) = filter { return .lists(try lists.map { try resolveList($0, catalog).id }) }
                 return filter
             }
-            return result
         }
         switch input {
-        case .create(let f): action = .create(try definition(f))
-        case .update(let name, let f):
+        case .create(var draft):
+            draft.filters = try filters(draft.filters); action = .create(draft)
+        case .update(let name, var patch, let clear):
             let id = try resolve(name, catalog.smartLists.map { ($0.id, $0.name) })
-            guard !catalog.smartLists.first(where: { $0.id == id })!.filters.contains(where: { if case .unknown = $0 { true } else { false } }) else {
+            let current = catalog.smartLists.first { $0.id == id }!
+            guard !current.filters.contains(where: { if case .unknown = $0 { true } else { false } }) else {
                 throw Failure(.unsupported, "Cannot edit a smart list with unknown native filters")
             }
-            action = .update(id, try definition(f))
+            if let submitted = patch.filters { patch.filters = try filters(submitted) }
+            let merged = try patch.applying(to: current, clear: clear)
+            if patch.match != nil || patch.filters != nil { patch.match = merged.match; patch.filters = merged.filters }
+            action = .update(id, patch, clear: clear)
         case .delete(let name, _): action = .delete(try resolve(name, catalog.smartLists.map { ($0.id, $0.name) }), confirmed: true)
         }
+        try backend.checkSupport(for: .smartList(action))
         return try mutate { try backend.smartList(action) }
     }
     private func template(_ input: TemplateAction) throws -> OperationResult {
@@ -481,8 +485,9 @@ public final class Operations: @unchecked Sendable {
         case .tag(let action):
             switch action { case .rename(_, let name): try Validation.tags([name]); case .delete(_, let yes): try confirmed(yes) }
         case .smartList(let action):
-            switch action { case .create(let f), .update(_, let f):
-                try Validation.list(ListFields(name: f.name, color: f.color, icon: f.icon)); try Validation.filters(f.filters)
+            switch action {
+            case .create(let f): try Validation.list(ListFields(name: f.name, color: f.color, icon: f.icon)); try Validation.filters(f.filters)
+            case .update(_, let patch, let clear): try patch.validate(clear: clear)
             case .delete(_, let yes): try confirmed(yes) }
         case .template(let action):
             switch action { case .create(let name, _, _): try Validation.name(name)

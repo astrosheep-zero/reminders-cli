@@ -18,7 +18,7 @@ public enum TagAction: Codable, Sendable, Equatable {
     case rename(String, name: String), delete(String, confirmed: Bool)
 }
 public enum SmartListAction: Codable, Sendable, Equatable {
-    case create(SmartList), update(String, SmartList), delete(String, confirmed: Bool)
+    case create(SmartListDraft), update(String, SmartListPatch, clear: [SmartListClear]), delete(String, confirmed: Bool)
 }
 public enum TemplateAction: Codable, Sendable, Equatable {
     case create(name: String, list: String, includeCompleted: Bool)
