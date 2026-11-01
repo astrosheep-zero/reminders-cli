@@ -36,10 +36,10 @@ struct ParserTests {
         #expect(patch.title == .absent)
     }
     @Test func queryAndSmartFilters() throws {
-        guard case .find(let query) = try command(["find", "--query-json", #"{"text":"coffee","matching":"prefix","scope":"title","tags":["work","home"],"excludeTags":["blocked"],"tagMatch":"any","includeCompleted":true,"completed":true,"flagged":false,"repeating":true,"hasLocation":true,"hasDueDate":false,"offset":4}"#, "--limit", "12"]) else { throw CLIParser.invalid("Expected find") }
+        guard case .find(let query) = try command(["find", "--query-json", #"{"text":"coffee","matching":"prefix","tags":["work","home"],"excludeTags":["blocked"],"tagMatch":"any","includeCompleted":true,"completed":true,"flagged":false,"repeating":true,"hasLocation":true,"hasDueDate":false,"offset":4}"#, "--limit", "12"]) else { throw CLIParser.invalid("Expected find") }
         #expect(query.limit == 12); #expect(query.flagged == false); #expect(query.includeCompleted); #expect(query.completed == true)
         #expect(query.matching == .prefix); #expect(query.offset == 4); #expect(query.hasDueDate == false)
-        #expect(query.scope == .title); #expect(query.tags == ["work", "home"]); #expect(query.excludeTags == ["blocked"]); #expect(query.tagMatch == .any)
+        #expect(query.text == "coffee"); #expect(query.tags == ["work", "home"]); #expect(query.excludeTags == ["blocked"]); #expect(query.tagMatch == .any)
         let filters: [SmartFilter] = [.tags(["work"], match: .all), .date(.relative(past: 0, future: 7, unit: .days)), .priorities([.high]), .flagged(true), .lists(["L"]), .location(.gettingInCar)]
         let text = #"[{"kind":"tags","value":["work"],"match":"all"},{"kind":"date","value":{"kind":"relative","past":0,"future":7,"unit":"days"}},{"kind":"priorities","value":["high"]},{"kind":"flagged","value":true},{"kind":"lists","value":["L"]},{"kind":"location","value":"gettingInCar"}]"#
         guard case .smartList(.create(let smart)) = try command(["smart-lists", "add", "Today", "--definition-json", "{\"filters\":\(text)}"]) else { throw CLIParser.invalid("Expected smart list") }

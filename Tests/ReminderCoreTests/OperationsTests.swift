@@ -302,7 +302,7 @@ struct OperationsTests {
         try fixture { backend, url in
             var query = ReminderQuery(); query.text = "does not match"; query.matching = .prefix
             query.list = "Inbox"; query.flagged = false; query.hasDueDate = false; query.offset = 2; query.limit = 3
-            query.scope = .title; query.tags = ["work"]; query.excludeTags = ["blocked"]; query.tagMatch = .any
+            query.tags = ["work"]; query.excludeTags = ["blocked"]; query.tagMatch = .any
             let result = Operations(backend: backend, journalURL: url).execute(.find(query))
             query.list = "L1"
             #expect(backend.lastQuery == query)
@@ -320,13 +320,12 @@ struct OperationsTests {
             q = ReminderQuery(); q.smartList = "Smart"; q.hasDueDate = false; invalid.append(q)
             q = ReminderQuery(); q.smartList = "Smart"; q.list = "Inbox"; invalid.append(q)
             q = ReminderQuery(); q.smartList = "Smart"; q.completed = true; invalid.append(q)
-            q = ReminderQuery(); q.scope = .title; invalid.append(q)
             q = ReminderQuery(); q.tags = ["#bad"]; invalid.append(q)
             q = ReminderQuery(); q.excludeTags = ["bad tag"]; invalid.append(q)
             q = ReminderQuery(); q.tagMatch = .any; invalid.append(q)
             q = ReminderQuery(); q.smartList = "Smart"; q.tags = ["work"]; invalid.append(q)
             q = ReminderQuery(); q.smartList = "Smart"; q.excludeTags = ["blocked"]; invalid.append(q)
-            q = ReminderQuery(); q.smartList = "Smart"; q.text = "x"; q.scope = .title; invalid.append(q)
+            q = ReminderQuery(); q.smartList = "Smart"; q.text = "x"; invalid.append(q)
             for query in invalid { #expect(engine.execute(.find(query)).error?.code == .invalidInput) }
             #expect(backend.lastQuery == nil); #expect(backend.catalogScopes.isEmpty)
             q = ReminderQuery(); q.smartList = "Smart"; q.includeCompleted = true; q.offset = 2

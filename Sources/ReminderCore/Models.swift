@@ -220,11 +220,9 @@ public struct ReminderDraft: Codable, Sendable, Equatable {
     public init(fields: ReminderFields, images: [ImageInput] = []) { self.fields = fields; self.images = images }
 }
 public enum SearchMatching: String, Codable, Sendable, Equatable { case exact, prefix, word }
-public enum SearchScope: String, Codable, Sendable { case all, title, location }
 public struct ReminderQuery: Codable, Sendable, Equatable {
     public var text: String?
     public var matching: SearchMatching?
-    public var scope: SearchScope?
     public var tags: [String]?
     public var excludeTags: [String]?
     public var tagMatch: MatchMode?

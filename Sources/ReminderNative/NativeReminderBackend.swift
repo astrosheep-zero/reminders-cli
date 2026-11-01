@@ -189,9 +189,7 @@ public final class NativeReminderBackend: ReminderBackend {
             if let text = query.text {
                 let matching: Int
                 switch query.matching ?? .word { case .exact: matching = 0; case .prefix: matching = 1; case .word: matching = 2 }
-                let base: String
-                switch query.scope ?? .all { case .all: base = "textualField"; case .title: base = "displayName"; case .location: base = "location" }
-                criteria.append(["base": base, "arg0": text, "arg1": matching])
+                criteria.append(["base": "textualField", "arg0": text, "arg1": matching])
             }
             if let list = query.list {
                 criteria.append(["base": "listID", "arg0": ["entityName": "REMList", "uuid": list], "arg1": ["includeForSiri": [:]]])

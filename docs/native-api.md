@@ -45,7 +45,7 @@ The current scoped-catalog integration uses these typed boundaries:
 
 Ordinary by-ID reads fetch the requested object directly. Reading its manual neighbor can inspect its own list ordering and sibling IDs; this is not a whole-account lookup. Per-entry-point caches cover by-ID reads, missing/present sections and an incremental per-list ordering cursor. Caches are discarded when the entry point returns. Criteria search passes pagination to native search; smart-list mode slices returned native IDs before conversion. Title resolution uses `predicateDescriptorForRemindersWithTitleEquals:` and the native predicate fetch, then batches full models. List enumeration uses `REMRemindersDataView.fetchRemindersWithListID:includingSubtasks:includingCompleted:error:` with both flags enabled, followed by one full-options batch per list. This exhaustive path remains separate from paginated search.
 
-Criteria queries use `REMSiriSearchDataView_RemindersByCriteriaInvocation` through `REMStore.resultFromPerformingSwiftInvocation:parametersData:storages:error:`. Text modes map to native exact/prefix/word. SearchScope maps all/title/location to textualField/displayName/location respectively; it requires text. List criteria use `includeForSiri`. The returned ID page is hydrated with one `fetchRemindersWithObjectIDs:fetchOptions:error:` call including early alerts. Search result storages alone omitted images, a URL and an early alert in live comparison, so they are not used as full reminder models. Returned identities are checked and conversion preserves native order. Child IDs retain the default native subtask-context read; the separate batch-child API’s completion/concealment semantics have not been established.
+Criteria queries use `REMSiriSearchDataView_RemindersByCriteriaInvocation` through `REMStore.resultFromPerformingSwiftInvocation:parametersData:storages:error:`. Text uses native `textualField` criteria with exact/prefix/word matching; search scope is not exposed. List criteria use `includeForSiri`. The returned ID page is hydrated with one `fetchRemindersWithObjectIDs:fetchOptions:error:` call including early alerts. Search result storages alone omitted images, a URL and an early alert in live comparison, so they are not used as full reminder models. Returned identities are checked and conversion preserves native order. Child IDs retain the default native subtask-context read; the separate batch-child API’s completion/concealment semantics have not been established.
 
 Tag query arrays use `reminderIDsWithIncludedTags:excludedTags:matchAll:error:` and the native `REMHashtagLabelDataView_ReminderIDsIncludeExcludeOperationInvocation`, binary-plist parameters `{include:[String],exclude:[String],operation:{all:{}}}` (or any). The existing single-tag selector delegates to this method; no invocation implementation is duplicated. This pure selector uses RNGuard without resetting an enclosing tag-count/mutation operation's caches or receipts. No matched IDs returns [] before criteria search. With ordinary criteria (including default isCompleted=false), Native adds `{"base":"objectID","arg0":[{"entityName":"REMReminder","uuid":"..."}]}` and lets native search intersect/order/page. With no criteria (`includeCompleted:true`, no explicit completed/text/list/flags), it slices returned IDs then batch-hydrates only that page. Exclude-only queries work, empty arrays add no filter, tagMatch defaults to all and requires nonempty included tags. No local filtering or account scan is substituted on error.
 
@@ -147,16 +147,16 @@ Physical lines, including comments and blanks (tests/docs/Core integration exclu
 | File | Lines |
 | --- | ---: |
 | Native Swift: ImageStaging | 92 |
-| Native Swift: NativeReminderBackend | 415 |
+| Native Swift: NativeReminderBackend | 413 |
 | Native Swift: SmartFilters | 129 |
 | Native Swift: Translation | 216 |
-| **Native Swift subtotal** | **852** |
+| **Native Swift subtotal** | **850** |
 | ObjC: Preflight.m | 103 |
 | ObjC: ReminderKitShim.m | 1,085 |
 | ObjC public header | 69 |
-| **Native production total** | **2,109** |
+| **Native production total** | **2,107** |
 
-Compared with this task's clean baseline, Native grows **2,093 → 2,109 (+16)** for separate section reads and reusable include/exclude-tag selection. Whole `Sources/` implementation files (Swift/ObjC/C) are **4,895 → 4,928 (+33, 0.7%)**; including headers **4,995 → 5,030 (+35)**. The net-reduction aim was not reached: typed sparse-list/query state and new native entry points slightly outweigh removed wiring, despite deleting PreparedOperation/projection transport, the creation JSON roundtrip and Native clear-completed selection. Counts include comments/blanks; no source relocation into tests or count-only minification is used.
+The earlier scoped-catalog/tag-query change grew Native **2,093 → 2,109 (+16)** and whole `Sources/` implementation files (Swift/ObjC/C) **4,895 → 4,928 (+33)**, or **4,995 → 5,030 (+35)** including headers. This focused search-scope removal from clean `dd84b54` reduces Native **2,109 → 2,107 (−2)** and whole `Sources/` implementation files **4,928 → 4,924 (−4)**, or **5,030 → 5,026 (−4)** including headers. Counts include comments/blanks; no source relocation into tests or count-only minification is used.
 
 ## Verification and non-evidence
 
@@ -170,9 +170,9 @@ closed RNPreflight feature table + unknown token  PASS (metadata only, no store)
 creation-to-sparse-field translation              PASS
 ```
 
-Current AI-usability/native-query verification on 2026-11-01: plain **`swift test` passes 147 tests** (Runtime 15 / Native 54 / Core 47 / CLI+facade+MCP 31), and `git diff --check` is clean. Added/updated tests cover native family isolation (including the actual ObjC list/section entry points), colon-safe section resolution, sparse list preservation/clear/false/conflicts, direct typed creation translation, native include/exclude/all/any payloads, no-selection short-circuit, pre-hydration paging, objectID intersection/default completion filtering, text scope/matching, unchanged public catalog shapes and worker-scope validation. Existing mutation/recovery/image/version checks remain. No compatibility helpers, live scripts, dist executable, setup, TCC or keychain operation were used. Linker warnings report missing optional CLT search directories.
+Earlier implementation verification on 2026-11-01: plain **`swift test` passed 147 tests** (Runtime 15 / Native 54 / Core 47 / CLI+facade+MCP 31); `git diff --check` is clean. Added/updated tests cover native family isolation (including the actual ObjC list/section entry points), colon-safe section resolution, sparse list preservation/clear/false/conflicts, direct typed creation translation, native include/exclude/all/any payloads, no-selection short-circuit, pre-hydration paging, objectID intersection/default completion filtering, text matching, search-scope rejection through real schema validation, unchanged public catalog shapes and worker catalog-scope validation. Existing mutation/recovery/image/version checks remain. No compatibility helpers, live scripts, dist executable, setup, TCC or keychain operation were used. Linker warnings report missing optional CLT search directories.
 
-During iteration, plain `swift test` intermittently failed TestingMacros discovery on this CLT release. A direct invocation below passed using the **installed real Swift Testing macro plugin**, without a compatibility framework or test script, and a subsequent plain `swift test` also passed. No toolchain or Package configuration was changed:
+The subsequent independent review rerun of plain `swift test` failed compiling `ReminderRuntimeTests` at `@Suite`/`@Test`: the external `TestingMacros` implementation/plugin was not found. The final direct invocation below then passed **147 tests** (Runtime 15 / Native 54 / Core 47 / CLI+facade+MCP 31), with no test failures and only the optional CLT search-directory linker warnings. This uses the **installed real Swift Testing macro plugin**, without shims, a compatibility framework or a test script. No toolchain or Package configuration was changed. Plain `swift test` remains intermittently unreliable on this CLT installation; no later plain success is asserted:
 
 ```sh
 swift test --disable-xctest -Xswiftc -load-plugin-library -Xswiftc /Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing/libTestingMacros.dylib
@@ -181,6 +181,8 @@ swift test --disable-xctest -Xswiftc -load-plugin-library -Xswiftc /Library/Deve
 Offline tests cover civil dates, recurrence/enum mapping, sparse patches and clearing, unsupported-vs-empty, unknown filter preservation and OR/default-AND semantics, image metadata receipts/permissions/lease ownership, exception fences, lazy construction, denial without store construction, exact request-owned receipts, metadata-only catalog, restored subtask parent and strict missing-child confirmation. ObjC bridge doubles implement the current boundary, never an old Core compatibility API.
 
 ### Previous live evidence versus this revision
+
+In the live evidence preceding search-scope removal, the current `displayName` path silently returned the baseline result set instead of narrowing it. The root cause is **not established**; offline criterion mapping and symbol availability did not prove working scoped search. Search scope has been removed from CLI/MCP, Core and Native mapping. This focused removal is verified offline only: no signed build, installation, real-reminder access, live probe or keychain/TCC change is performed. The globally installed build remains unchanged pending a separate installation step.
 
 Signed build `D6E95B9B-AA35-422E-984C-3DF067D04B5E` was live exercised on 2026-10-31 after 98 offline tests: supported command/field/filter families, joined assignment, templates/content, ordinary image metadata/add/remove, soft deletion and root/child/parent/image restore variants. The independently deleted subtask parent repair was live rechecked. Those local ignored receipts are summarized in [coverage](coverage.md), not replaced by current mock evidence.
 

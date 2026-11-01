@@ -114,13 +114,11 @@ struct NativeBackendTests {
         bridge.queryRows = [["id": root]]
         #expect(throws: Failure.self) { try backend(bridge).find(query) }
     }
-    @Test func textScopesAndMatchingMapToNativeCriteria() throws {
-        for (scope, base): (SearchScope?, String) in [(nil, "textualField"), (.all, "textualField"), (.title, "displayName"), (.location, "location")] {
-            for (matching, style): (SearchMatching?, Int) in [(nil, 2), (.exact, 0), (.prefix, 1), (.word, 2)] {
-                let bridge = OfflineBridge(); var q = ReminderQuery(); q.text = "place"; q.scope = scope; q.matching = matching
-                _ = try backend(bridge).find(q)
-                #expect(bridge.searchCriteria.first as NSDictionary? == ["base": base, "arg0": "place", "arg1": style] as NSDictionary)
-            }
+    @Test func textMatchingMapsToNativeCriteria() throws {
+        for (matching, style): (SearchMatching?, Int) in [(nil, 2), (.exact, 0), (.prefix, 1), (.word, 2)] {
+            let bridge = OfflineBridge(); var q = ReminderQuery(); q.text = "place"; q.matching = matching
+            _ = try backend(bridge).find(q)
+            #expect(bridge.searchCriteria.first as NSDictionary? == ["base": "textualField", "arg0": "place", "arg1": style] as NSDictionary)
         }
     }
     @Test func tagSelectionShortCircuitsEmptyAndPaginatesUnconstrainedNativeIDs() throws {
@@ -143,12 +141,12 @@ struct NativeBackendTests {
         #expect(bridge.searchCriteria.first as NSDictionary? == ["base": "isCompleted", "arg0": false] as NSDictionary)
         #expect(bridge.searchCriteria.last?["base"] as? String == "objectID"); #expect(bridge.readBatches.isEmpty)
         bridge.tagQueries = []
-        var q = ReminderQuery(); q.excludeTags = ["blocked"]; q.text = "needle"; q.scope = .title
+        var q = ReminderQuery(); q.excludeTags = ["blocked"]; q.text = "needle"
         q.list = list; q.flagged = false; q.offset = 3; q.limit = 2
         #expect(try backend.find(q).map(\.id) == [child])
         #expect(bridge.tagQueries.first?.0 == []); #expect(bridge.tagQueries.first?.1 == ["blocked"])
         #expect(bridge.searchCriteria as NSArray == [
-            ["base": "displayName", "arg0": "needle", "arg1": 2],
+            ["base": "textualField", "arg0": "needle", "arg1": 2],
             ["base": "listID", "arg0": ["entityName": "REMList", "uuid": list], "arg1": ["includeForSiri": [:]]],
             ["base": "isCompleted", "arg0": false], ["base": "isFlagged", "arg0": false],
             ["base": "objectID", "arg0": [["entityName": "REMReminder", "uuid": root], ["entityName": "REMReminder", "uuid": child]]]

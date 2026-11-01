@@ -64,9 +64,9 @@ struct FacadeTests {
         var patch = ListPatch(); patch.name = "Only rename"
         #expect(try FacadeOperations.prepare("lists_edit", arguments: arguments(#"{"id":"L","fields":{"name":"Only rename"}}"#)) == .operation(.list(.update("L", patch))))
         #expect(try FacadeOperations.prepare("lists_edit", arguments: arguments(#"{"id":"L","clear":["color","icon","groupID"]}"#)) == .operation(.list(.update("L", ListPatch(), clear: [.color, .icon, .groupID]))))
-        let request = try FacadeOperations.prepare("find", arguments: arguments(#"{"query":{"text":"fish","scope":"location","tags":["work","home"],"excludeTags":["blocked"],"tagMatch":"any"}}"#))
+        let request = try FacadeOperations.prepare("find", arguments: arguments(#"{"query":{"text":"fish","matching":"prefix","tags":["work","home"],"excludeTags":["blocked"],"tagMatch":"any"}}"#))
         guard case .operation(.find(let query)) = request else { throw invalid("Expected find") }
-        #expect(query.text == "fish"); #expect(query.scope == .location)
+        #expect(query.text == "fish"); #expect(query.matching == .prefix)
         #expect(query.tags == ["work", "home"]); #expect(query.excludeTags == ["blocked"]); #expect(query.tagMatch == .any)
         let edit = try #require(FacadeOperations.definitions.first { $0.toolName == "lists_edit" })
         #expect(try JSONValue.properties(edit.inputSchema)["required"] == .array([.string("id")]))
@@ -106,7 +106,7 @@ struct FacadeTests {
             ("smart_lists_add", #"{"name":"N","definition":{"filters":[{"kind":"priorities","value":["none"]}]}}"#),
             ("smart_lists_add", #"{"name":"N","definition":{"filters":[{"kind":"date","value":{"kind":"relative","past":0,"future":1,"unit":"minutes"}}]}}"#),
             ("find", #"{"query":{"section":"S"}}"#), ("find", #"{"query":{"tags":[""]}}"#),
-            ("find", #"{"query":{"scope":"title"}}"#), ("find", #"{"query":{"scope":"notes","text":"x"}}"#),
+            ("find", #"{"query":{"text":"fish","scope":"title"}}"#),
             ("find", #"{"query":{"tagMatch":"any"}}"#), ("find", #"{"query":{"tagMatch":"bad","tags":["x"]}}"#),
             ("find", #"{"query":{"smartList":"S","excludeTags":["x"]}}"#),
             ("find", #"{"query":{"assigneeID":"A"}}"#), ("find", #"{"query":{"dueBefore":{}}}"#), ("image", #"{"id":"R"}"#)
