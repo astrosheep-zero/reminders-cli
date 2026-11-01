@@ -21,8 +21,19 @@ struct MCPTests {
             #expect(initialized.serverInfo.version == "0.1.1"); #expect(initialized.capabilities.tools != nil)
             let (tools, next) = try await client.listTools()
             #expect(next == nil); #expect(Set(tools.map(\.name)) == Set(FacadeOperations.definitions.map(\.toolName)))
-            #expect(!tools.contains { $0.name == "setup" }); #expect(tools.first { $0.name == "show" }?.annotations.readOnlyHint == true)
-            #expect(tools.first { $0.name == "lists_delete" }?.annotations.destructiveHint == true)
+            #expect(!tools.contains { $0.name == "setup" })
+            for (name, readOnly, destructive, idempotent) in [
+                ("show", true, false, true), ("add", false, false, false),
+                ("edit", false, true, false), ("lists_delete", false, true, false),
+                ("deleted", false, true, false)
+            ] {
+                let tool = try #require(tools.first { $0.name == name })
+                #expect(tool.annotations.readOnlyHint == readOnly)
+                #expect(tool.annotations.destructiveHint == destructive)
+                #expect(tool.annotations.idempotentHint == idempotent)
+                #expect(tool.annotations.openWorldHint == false)
+            }
+            #expect(try #require(tools.first { $0.name == "deleted" }).description?.contains("journal") == true)
             let blocked: RequestContext<CallTool.Result> = try await client.send(CallTool.request(.init(name: "setup", arguments: [:])))
             let blockedResult = try await blocked.value
             #expect(blockedResult.isError == true)

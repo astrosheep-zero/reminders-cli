@@ -18,7 +18,7 @@ public struct MCPFrontend: Sendable {
             Tool(name: definition.toolName, description: definition.summary,
                 inputSchema: try Value(definition.inputSchema),
                 annotations: .init(readOnlyHint: definition.readOnly, destructiveHint: definition.destructive,
-                    idempotentHint: definition.readOnly, openWorldHint: false))
+                    idempotentHint: definition.idempotent, openWorldHint: false))
         }
         await server.withMethodHandler(ListTools.self) { params in
             guard params.cursor == nil else { throw MCPError.invalidParams("This fixed tool list has no further pages") }

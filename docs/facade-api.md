@@ -30,7 +30,7 @@ There are **36 tools**, with typed object schemas, required properties, closed n
 | Smart lists | `smart_lists_add`, `smart_lists_edit`, `smart_lists_delete` |
 | Templates | `templates_add`, `templates_use`, `templates_delete` |
 
-`setup` is deliberately **not** a tool. Invoke CLI `reminder setup` explicitly when permission is needed; no ordinary operation or MCP startup requests it. `doctor` may perform the existing sentinel UUID read only when full access is already granted, and a successful diagnostic envelope does not mean all checks passed. `deleted` can reconcile its journal, so it is not annotated read-only.
+`setup` is deliberately **not** a tool. Invoke CLI `reminder setup` explicitly when permission is needed; no ordinary operation or MCP startup requests it. `doctor` may perform the existing sentinel UUID read only when full access is already granted, and a successful diagnostic envelope does not mean all checks passed. `deleted` reconciles and prunes the persistent tool journal, so its hints mark it destructive and not read-only or idempotent. Reads are marked read-only and idempotent; additive operations are non-destructive without a replay guarantee. Edits, renames, moves, completion and deletion are conservatively destructive and non-idempotent. These hints describe effects, not authorization, and do not replace version or confirmation controls; open-world is false for this bounded local store.
 
 CLI names use spaces/hyphens (`smart-lists edit`); MCP names replace both with underscores (`smart_lists_edit`). CLI retains all command families and image-file adaptation. `--help` derives operation documentation from the shared registry.
 
