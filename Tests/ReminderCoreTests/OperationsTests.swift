@@ -18,6 +18,8 @@ private final class MemoryBackend: ReminderBackend {
     var lookup: ((String) throws -> Void)?
     var beforeDelete: (() throws -> Void)?
     var beforeMutation: (() -> Void)?
+    var recoveryLookup: ((String) throws -> Void)?
+    var listReceiptIDs: [String]?
     var mutationCalls = 0
     var deleteCalls: [[String]] = []
     var actions: [Command] = []
@@ -38,12 +40,25 @@ private final class MemoryBackend: ReminderBackend {
         if !includeTags { result.tags = [] }
         return result
     }
+    var lastQuery: ReminderQuery?
+    var enumerationError: Failure?
+    var enumerationLists: [String?] = []
+    var titleQueries: [String] = []
+    var titleCandidates: [Reminder]?
     func find(_ query: ReminderQuery) throws -> [Reminder] {
         if let readError { throw readError }
-        return items.values.filter { item in
-            (query.text == nil || item.fields.title.contains(query.text!)) &&
-            (query.list == nil || item.fields.listID == query.list) && (query.includeCompleted || !item.fields.completed)
-        }.sorted { $0.id < $1.id }
+        lastQuery = query
+        return items.values.sorted { $0.id < $1.id }
+    }
+    func reminders(listID: String?) throws -> [Reminder] {
+        enumerationLists.append(listID)
+        if let error = enumerationError ?? readError { throw error }
+        return items.values.filter { listID == nil || $0.fields.listID == listID }.sorted { $0.id < $1.id }
+    }
+    func reminders(matchingTitle: String) throws -> [Reminder] {
+        titleQueries.append(matchingTitle)
+        if let readError { throw readError }
+        return titleCandidates ?? items.values.filter { $0.fields.title == matchingTitle }.sorted { $0.id < $1.id }
     }
     func reminder(id: String) throws -> Reminder? {
         lookupCount += 1; try lookup?(id)
@@ -51,6 +66,7 @@ private final class MemoryBackend: ReminderBackend {
         return items.values.first { $0.id.caseInsensitiveCompare(id) == .orderedSame }
     }
     func restorableState(id: String) throws -> RestorableState {
+        try recoveryLookup?(id)
         if let readError { throw readError }
         if deletedItems[id] != nil { return .restorable }
         return items[id] == nil ? .absent : .active
@@ -94,12 +110,33 @@ private final class MemoryBackend: ReminderBackend {
         }
         return MutationResult(affectedIDs: ids + restoreAuxiliaryIDs)
     }
-    func list(_ action: ListAction) throws -> MutationResult { try begin(); actions.append(.list(action)); return MutationResult(affectedIDs: ["list"]) }
+    func list(_ action: ListAction) throws -> MutationResult {
+        try begin(); actions.append(.list(action))
+        if case .delete(let id, _) = action { return MutationResult(affectedIDs: listReceiptIDs ?? [id]) }
+        return MutationResult(affectedIDs: ["list"])
+    }
     func group(_ action: GroupAction) throws -> MutationResult { try begin(); actions.append(.group(action)); return MutationResult(affectedIDs: ["group"]) }
     func section(_ action: SectionAction) throws -> MutationResult { try begin(); actions.append(.section(action)); return MutationResult(affectedIDs: ["section"]) }
     func tag(_ action: TagAction) throws -> MutationResult { try begin(); actions.append(.tag(action)); return MutationResult(affectedIDs: ["tag"]) }
     func smartList(_ action: SmartListAction) throws -> MutationResult { try begin(); actions.append(.smartList(action)); return MutationResult(affectedIDs: ["smart"]) }
     func template(_ action: TemplateAction) throws -> MutationResult { try begin(); actions.append(.template(action)); return MutationResult(affectedIDs: ["template"]) }
+}
+
+private final class ReconciliationInterleave: @unchecked Sendable {
+    let url: URL
+    let done = DispatchSemaphore(value: 0)
+    var error: Error?
+    init(url: URL) { self.url = url }
+    func update() {
+        do {
+            try DeletionJournal(url: url).transaction { entries in
+                entries[0].title = "Changed during lookup"
+                entries[1].state = .pending
+                entries.append(DeletionEntry(id: "new", title: "New", listID: "L1", parentID: nil, time: Date(), state: .pending))
+            }
+        } catch { self.error = error }
+        done.signal()
+    }
 }
 
 struct OperationsTests {
@@ -122,7 +159,23 @@ struct OperationsTests {
             #expect(engine.execute(.catalog(includeTags: false)).status == .ok)
             #expect(engine.execute(.catalog(includeTags: true)).status == .ok)
             #expect(engine.execute(.tag(.rename("work", name: "job"))).status == .ok)
-            #expect(backend.catalogProjections == [false, true, true])
+            #expect(backend.catalogProjections == [false, true])
+        }
+    }
+    @Test func tagMutationPassesNativeAliasWithoutCatalogRead() throws {
+        try fixture { backend, url in
+            let engine = Operations(backend: backend, journalURL: url)
+            let rename = TagAction.rename("WoRk", name: "JOB")
+            let delete = TagAction.delete("wOrK", confirmed: true)
+            backend.unsupported = true
+            let refused = engine.execute(.tag(rename))
+            #expect(refused.status == .failed); #expect(refused.error?.code == .unsupported)
+            #expect(backend.actions.isEmpty); #expect(backend.mutationCalls == 0)
+            backend.unsupported = false
+            #expect(engine.execute(.tag(rename)).status == .ok)
+            #expect(engine.execute(.tag(delete)).status == .ok)
+            #expect(backend.actions == [.tag(rename), .tag(delete)])
+            #expect(backend.catalogProjections.isEmpty)
         }
     }
     @Test func restoredChildReceiptAllowsOnlyItsActualActiveParentAndKeepsParentJournal() throws {
@@ -173,6 +226,62 @@ struct OperationsTests {
             #expect(try journal.read() == saved)
         }
     }
+    @Test func findPassesNativeQueryAndReturnsBackendResults() throws {
+        try fixture { backend, url in
+            var query = ReminderQuery(); query.text = "does not match"; query.matching = .prefix
+            query.list = "Inbox"; query.flagged = false; query.hasDueDate = false; query.offset = 2; query.limit = 3
+            let result = Operations(backend: backend, journalURL: url).execute(.find(query))
+            query.list = "L1"
+            #expect(backend.lastQuery == query)
+            #expect(result.result == .reminders([backend.items["R1"]!]))
+        }
+    }
+    @Test func queryValidationRejectsInvalidCombinationsBeforeBackend() throws {
+        try fixture { backend, url in
+            let engine = Operations(backend: backend, journalURL: url)
+            var invalid: [ReminderQuery] = []
+            var q = ReminderQuery(); q.text = " \n"; invalid.append(q)
+            q = ReminderQuery(); q.matching = .word; invalid.append(q)
+            q = ReminderQuery(); q.offset = -1; invalid.append(q)
+            q = ReminderQuery(); q.limit = 0; invalid.append(q)
+            q = ReminderQuery(); q.smartList = "Smart"; q.hasDueDate = false; invalid.append(q)
+            q = ReminderQuery(); q.smartList = "Smart"; q.list = "Inbox"; invalid.append(q)
+            q = ReminderQuery(); q.smartList = "Smart"; q.completed = true; invalid.append(q)
+            for query in invalid { #expect(engine.execute(.find(query)).error?.code == .invalidInput) }
+            #expect(backend.lastQuery == nil); #expect(backend.catalogProjections.isEmpty)
+            q = ReminderQuery(); q.smartList = "Smart"; q.includeCompleted = true; q.offset = 2
+            #expect(engine.execute(.find(q)).status == .ok)
+            #expect(backend.lastQuery?.smartList == "SM1")
+        }
+    }
+    @Test func titleLookupAndExhaustiveReadsProtectDeletion() throws {
+        try fixture { backend, url in
+            let engine = Operations(backend: backend, journalURL: url)
+            backend.items["R2"] = Reminder(id: "R2", fields: ReminderFields(title: "Task", listID: "L2", completed: true))
+            #expect(engine.execute(.show("Task")).error?.code == .ambiguous)
+            #expect(backend.titleQueries == ["Task"])
+            #expect(backend.enumerationLists.isEmpty)
+            backend.enumerationError = Failure(.backend, "enumeration failed")
+            #expect(engine.execute(.list(.delete("Inbox", confirmed: true))).error?.code == .backend)
+            #expect(backend.enumerationLists.last! == "L1")
+            #expect(backend.mutationCalls == 0)
+            #expect(!FileManager.default.fileExists(atPath: url.path))
+        }
+    }
+    @Test func titleResolutionUsesNativeCandidatesWithoutFiltering() throws {
+        try fixture { backend, url in
+            let engine = Operations(backend: backend, journalURL: url)
+            let candidate = Reminder(id: "R2", fields: ReminderFields(title: "Different native match", listID: "L2", completed: true))
+            backend.titleCandidates = [candidate]
+            #expect(engine.execute(.show("requested title")).result == .reminders([candidate]))
+            #expect(backend.titleQueries == ["requested title"])
+            backend.titleCandidates = [candidate, backend.items["R1"]!]
+            #expect(engine.execute(.show("requested title")).error?.code == .ambiguous)
+            backend.titleCandidates = []
+            #expect(engine.execute(.show("requested title")).error?.code == .notFound)
+            #expect(backend.enumerationLists.isEmpty)
+        }
+    }
     @Test func testNamesAreExactAmbiguityFailsAndIDsIgnoreCase() throws {
         try fixture { backend, url in
             let engine = Operations(backend: backend, journalURL: url)
@@ -186,6 +295,23 @@ struct OperationsTests {
             #expect(backend.mutationCalls == 0)
         }
     }
+    @Test func creationInheritsParentOrUsesUniqueDefaultList() throws {
+        try fixture { backend, url in
+            let engine = Operations(backend: backend, journalURL: url)
+            var fields = ReminderFields(title: "New", listID: "")
+            #expect(engine.execute(.create(ReminderDraft(fields: fields))).status == .ok)
+            #expect(backend.items["created"]?.fields.listID == "L1")
+            backend.items["R1"]!.fields.listID = "L2"; fields.parentID = "R1"
+            backend.data.lists[0].isDefault = false
+            #expect(engine.execute(.create(ReminderDraft(fields: fields))).status == .ok)
+            #expect(backend.items["created"]?.fields.listID == "L2")
+            fields.parentID = nil
+            #expect(engine.execute(.create(ReminderDraft(fields: fields))).error?.code == .notFound)
+            backend.data.lists[0].isDefault = true; backend.data.lists[1].isDefault = true
+            #expect(engine.execute(.create(ReminderDraft(fields: fields))).error?.code == .ambiguous)
+            #expect(backend.mutationCalls == 2)
+        }
+    }
     @Test func testStaleVersionAndLastMomentRecheckRejectWithoutMutation() throws {
         try fixture { backend, url in
             let engine = Operations(backend: backend, journalURL: url)
@@ -197,6 +323,19 @@ struct OperationsTests {
             }
             #expect(engine.execute(.update(id: "R1", version: version, patch: patch)).error?.code == .conflict)
             #expect(backend.mutationCalls == 0)
+        }
+    }
+    @Test func smartFilterValidationRejectsImpossibleInputsBeforeBackend() throws {
+        try fixture { backend, url in
+            backend.unsupported = true
+            let filters: [SmartFilter] = [.priorities([.none]), .date(.relative(past: 0, future: 1, unit: .minutes)),
+                .date(.relative(past: 1, future: 1, unit: .days)), .date(.relative(past: 0, future: 0, unit: .days)),
+                .date(.relative(past: -1, future: 1, unit: .hours))]
+            let engine = Operations(backend: backend, journalURL: url)
+            for filter in filters {
+                #expect(engine.execute(.smartList(.create(SmartList(id: "", name: "Invalid", filters: [filter])))).error?.code == .invalidInput)
+            }
+            #expect(backend.mutationCalls == 0); #expect(backend.catalogProjections.isEmpty)
         }
     }
     @Test func testVersionCoversEveryEditableFieldAndImageMetadata() throws {
@@ -362,6 +501,28 @@ struct OperationsTests {
             #expect(mutation.reminders.allSatisfy { $0.fields.listID == "L1" })
             #expect(try DeletionJournal(url: url).read().isEmpty)
             #expect(engine.execute(.restore(id: "other", list: nil)).error?.code == .invalidInput)
+        }
+    }
+    @Test func restoreCompactionPreservesConcurrentChangesAndHandlesDuplicateSavedIDs() throws {
+        try fixture { backend, url in
+            let root = Reminder(id: "R1", fields: ReminderFields(title: "Root", listID: "L1"), childIDs: ["C"])
+            let child = Reminder(id: "C", fields: ReminderFields(title: "Child", listID: "L1", parentID: "R1"))
+            backend.items = [:]; backend.deletedItems = [root.id: root, child.id: child]
+            let journal = DeletionJournal(url: url), time = Date(timeIntervalSince1970: 100)
+            let savedRoot = DeletionEntry(id: "R1", title: "Root", listID: "L1", parentID: nil, time: time, state: .confirmed)
+            let firstChild = DeletionEntry(id: "C", title: "Child", listID: "L1", parentID: "R1", time: time, state: .confirmed)
+            let duplicate = DeletionEntry(id: "c", title: "Older duplicate", listID: "L1", parentID: "R1", time: time, state: .confirmed)
+            let unrelated = DeletionEntry(id: "other", title: "Keep", listID: "L1", parentID: nil, time: time, state: .pending)
+            try journal.transaction { $0 = [savedRoot, firstChild, duplicate, unrelated] }
+            backend.beforeMutation = {
+                try! journal.transaction { $0[2].title = "Changed during restore" }
+            }
+            let result = Operations(backend: backend, journalURL: url).execute(.restore(id: "R1", list: nil))
+            #expect(result.status == .ok)
+            guard case .mutation(let receipt) = result.result else { Issue.record("Expected restore receipt"); return }
+            #expect(Set(receipt.affectedIDs) == ["R1", "C", "c"])
+            var changed = duplicate; changed.title = "Changed during restore"
+            #expect(try journal.read() == [changed, unrelated])
         }
     }
     @Test func testRestoreMissingChildAndVerificationReadFailureKeepJournalAndEvidence() throws {
@@ -539,6 +700,75 @@ struct OperationsTests {
             let result = Operations(backend: backend, journalURL: url).execute(.list(.clearCompleted("Inbox", confirmed: true)))
             #expect(result.status == .ok); #expect(backend.deleteCalls == [["R1"]])
             #expect(backend.items["late"] != nil); #expect(backend.actions.isEmpty)
+        }
+    }
+    @Test func reconciliationQueriesOutsideLockAndPreservesConcurrentEntries() throws {
+        try fixture { backend, url in
+            let journal = DeletionJournal(url: url)
+            let original = DeletionEntry(id: "R1", title: "Old", listID: "L1", parentID: nil, time: Date(), state: .pending)
+            let changedState = DeletionEntry(id: "state", title: "State", listID: "L1", parentID: nil, time: Date(), state: .confirmed)
+            let absent = DeletionEntry(id: "gone", title: "Gone", listID: "L1", parentID: nil, time: Date(), state: .confirmed)
+            try journal.transaction { $0 = [original, changedState, absent] }
+            backend.deletedItems["R1"] = backend.items["R1"]
+            let interleave = ReconciliationInterleave(url: url)
+            var timedOut = false
+            backend.recoveryLookup = { id in
+                guard id == "R1" else { return }
+                DispatchQueue.global().async { interleave.update() }
+                if interleave.done.wait(timeout: .now() + 3) == .timedOut {
+                    timedOut = true
+                    throw Failure(.backend, "Concurrent journal update blocked by recovery lookup")
+                }
+            }
+            let result = Operations(backend: backend, journalURL: url).execute(.deleted)
+            if timedOut { _ = interleave.done.wait(timeout: .now() + 3) }
+            #expect(!timedOut); #expect(interleave.error == nil); #expect(result.status == .ok)
+            let entries = try journal.read()
+            #expect(Set(entries.map(\.id)) == ["R1", "state", "new"])
+            #expect(entries.first { $0.id == "R1" }?.title == "Changed during lookup")
+            #expect(entries.first { $0.id == "R1" }?.state == .pending)
+            #expect(entries.first { $0.id == "state" }?.state == .pending)
+            if case .deleted(let output) = result.result { #expect(Set(output.entries.map(\.id)) == ["R1", "state", "new"]) }
+            else { Issue.record("Expected reconciled entries") }
+        }
+    }
+    @Test func bulkClearReplacesMatchingJournalEntriesAndConfirmsSnapshot() throws {
+        try fixture { backend, url in
+            backend.items = [:]
+            let journal = DeletionJournal(url: url)
+            let oldTime = Date(timeIntervalSince1970: 1)
+            let count = 300
+            for index in 0..<count {
+                let id = "R\(index)"
+                backend.items[id] = Reminder(id: id, fields: ReminderFields(title: id, listID: "L1", completed: true))
+            }
+            try journal.transaction { entries in
+                entries = (0..<count).map { DeletionEntry(id: "r\($0)", title: "old", listID: "L1", parentID: nil, time: oldTime, state: .confirmed) }
+                entries.append(DeletionEntry(id: "other", title: "Keep", listID: "L2", parentID: nil, time: oldTime, state: .pending))
+            }
+            backend.beforeDelete = {
+                let entries = try journal.read()
+                #expect(entries.count == count + 1)
+                #expect(entries.filter { $0.id != "other" }.allSatisfy { $0.state == .pending && $0.title == $0.id })
+            }
+            let result = Operations(backend: backend, journalURL: url).execute(.list(.clearCompleted("Inbox", confirmed: true)))
+            #expect(result.status == .ok); #expect(backend.deleteCalls.count == 1)
+            let entries = try journal.read()
+            #expect(entries.count == count + 1)
+            #expect(entries.filter { $0.id != "other" }.allSatisfy { $0.state == .confirmed })
+            #expect(entries.first { $0.id == "other" }?.state == .pending)
+        }
+    }
+    @Test func listDeleteUnexpectedReceiptPreservesPendingEvidenceAndReturnsUnknown() throws {
+        try fixture { backend, url in
+            backend.listReceiptIDs = ["L1", "R1", "late"]
+            let result = Operations(backend: backend, journalURL: url).execute(.list(.delete("Inbox", confirmed: true)))
+            #expect(result.status == .unknown); #expect(result.error?.underlyingCode == .conflict)
+            #expect(Set(result.error?.affectedIDs ?? []) == ["L1", "R1", "late"])
+            guard case .mutation(let receipt) = result.result else { Issue.record("Expected retained receipt"); return }
+            #expect(Set(receipt.affectedIDs) == ["L1", "R1", "late"])
+            let entries = try DeletionJournal(url: url).read()
+            #expect(entries.map(\.id) == ["R1"]); #expect(entries.first?.state == .pending)
         }
     }
     @Test func testContainerDeletionAlsoJournalsBeforeNativeAndPersistenceFailureAborts() throws {

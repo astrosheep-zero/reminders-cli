@@ -105,12 +105,35 @@ struct ReminderNativeTests {
         raw["images"] = [["id": id, "fileName": "x.png", "type": "public.png", "size": 4]]
         #expect(try first.version() != Translation.reminder(raw).version())
     }
+    @Test func timestampsSurviveTranslationWithoutChangingVersionOrEditableFields() throws {
+        let plain = try Translation.reminder(fixture())
+        #expect(plain.creationDate == nil); #expect(plain.lastModifiedDate == nil); #expect(plain.completionDate == nil)
+        var raw = fixture()
+        raw["creationDate"] = NSDate(timeIntervalSince1970: 0)
+        raw["lastModifiedDate"] = NSDate(timeIntervalSince1970: 60)
+        raw["completionDate"] = NSDate(timeIntervalSince1970: 120)
+        let item = try Translation.reminder(raw)
+        #expect(item.creationDate == Date(timeIntervalSince1970: 0))
+        #expect(item.lastModifiedDate == Date(timeIntervalSince1970: 60))
+        #expect(item.completionDate == Date(timeIntervalSince1970: 120))
+        #expect(item.fields == plain.fields); #expect(try item.version() == plain.version())
+        #expect(try JSONDecoder().decode(Reminder.self, from: JSONEncoder().encode(item)) == item)
+        #expect(try JSONDecoder().decode(Reminder.self, from: JSONEncoder().encode(plain)) == plain)
+    }
     @Test func supportedSmartFiltersRoundTripThroughNativeSchema() throws {
         let smart = SmartList(id: id, name: "offline", match: .any, filters: [
             .tags(["work"], match: .all), .flagged(true), .lists([listID]), .priorities([.high]),
             .date(.range(from: CalendarDate(2026, 10, 1), before: CalendarDate(2026, 11, 1))), .location(.gettingInCar)])
         let read = try SmartFilters.decode(["id": id, "name": smart.name, "filterData": SmartFilters.data(smart)])
         #expect(try SmartFilters.data(read) == SmartFilters.data(smart))
+    }
+    @Test func supportedRelativeDatesAndLocationsRoundTripWithoutFallbacks() throws {
+        let filters: [SmartFilter] = [.date(.none), .date(.any), .location(.none), .location(.gettingOutOfCar)] +
+            [AlertUnit.hours, .days, .weeks, .months].flatMap { [.date(.relative(past: 2, future: 0, unit: $0)), .date(.relative(past: 0, future: 3, unit: $0))] }
+        for filter in filters {
+            let smart = SmartList(id: id, name: "Supported", filters: [filter])
+            #expect(try SmartFilters.decode(["id": id, "name": smart.name, "filterData": SmartFilters.data(smart)]).filters == [filter])
+        }
     }
     @Test func nativeDefaultAndAndMultiListUnionArePreserved() throws {
         let data = try JSONSerialization.data(withJSONObject: ["date": ["any": ""]])
@@ -126,10 +149,11 @@ struct ReminderNativeTests {
         guard case .unknown = unknown.filters[0] else { Issue.record("Impossible multi-list intersection was reinterpreted as union"); return }
     }
     @Test func nestedUnknownSmartFieldsRemainOpaqueAndRefuseEdits() throws {
-        let original: [String: Any] = ["operation": "and", "hashtags": ["hashtags": ["include": ["x"], "exclude": [], "operation": "and", "future": true]], "newFilter": ["meaning": 42]]
+        let original: [String: Any] = ["operation": "and", "hashtags": ["hashtags": ["include": ["x"], "exclude": [], "operation": "and", "future": true]],
+            "newFilter": ["meaning": 42], "time": ["morning": ""], "date": ["today": ""], "priorities": ["none"]]
         let data = try JSONSerialization.data(withJSONObject: original)
         let read = try SmartFilters.decode(["id": id, "name": "unknown", "filterData": data])
-        #expect(read.filters.count == 2)
+        #expect(read.filters.count == original.count - 1)
         for filter in read.filters {
             guard case .unknown(let key, let payload) = filter else { Issue.record("Partially known filter was reinterpreted"); continue }
             let expected = try JSONSerialization.data(withJSONObject: original[key]!, options: [.sortedKeys, .fragmentsAllowed])
@@ -137,11 +161,15 @@ struct ReminderNativeTests {
         }
         failure(.unsupported) { _ = try SmartFilters.data(read) }
     }
-    @Test func unsupportedSmartFilterIsRefusedBeforeStoreConstruction() throws {
+    @Test func invalidSmartFiltersAreRefusedBeforeStoreConstruction() throws {
         var opened = false
         let backend = NativeReminderBackend(openBridge: { opened = true; throw Failure(.backend, "test factory must stay closed") }, permission: { "fullAccess" })
-        let smart = SmartList(id: "", name: "unsupported", filters: [.time(fromHour: 2, fromMinute: 0, toHour: 4, toMinute: 0)])
-        failure(.unsupported) { try backend.checkSupport(for: .smartList(.create(smart))) }
+        let invalid: [[SmartFilter]] = [[], [.flagged(true), .flagged(false)], [.date(.range(from: nil, before: nil))], [.priorities([.none])],
+            [.date(.relative(past: 0, future: 1, unit: .minutes))], [.date(.relative(past: 1, future: 1, unit: .days))],
+            [.date(.relative(past: 0, future: 0, unit: .days))], [.date(.relative(past: -1, future: 1, unit: .days))]]
+        for filters in invalid {
+            failure(.invalidInput) { try backend.checkSupport(for: .smartList(.create(SmartList(id: "", name: "Invalid", filters: filters)))) }
+        }
         var patch = ReminderPatch(); patch.title = .set("new")
         try backend.checkSupport(for: .update(id: id, version: "offline", patch: patch))
         #expect(!opened)

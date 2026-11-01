@@ -24,7 +24,8 @@ public indirect enum JSONValue: Codable, Sendable, Equatable {
         }
     }
     public static func properties<T: Encodable>(_ value: T) throws -> [String: JSONValue] {
-        guard case .object(let object) = try JSONDecoder().decode(Self.self, from: JSONEncoder().encode(value)) else {
+        let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+        guard case .object(let object) = try JSONDecoder().decode(Self.self, from: encoder.encode(value)) else {
             throw invalid("Expected typed object")
         }
         return object

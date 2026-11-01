@@ -108,8 +108,12 @@ private struct Session {
             var observedStatus: Int32 = 0
             let exited = rr_reap(child.pid, &observedStatus)
             if exited < 0 { issue = .io(code: 10); break }
-            if exited == 1 { status = observedStatus }
-            if status != nil && output < 0 && diagnostic < 0 { break }
+            if exited == 1 {
+                status = observedStatus
+                // Descendants may still hold the pipes open after the worker exits.
+                // Stop the group now, then drain its already committed output below.
+                break
+            }
             var ready: Int32 = 0
             let polling = rr_poll(outbound == nil ? -1 : input, output, diagnostic,
                                   Int32(min(20, max(1, remaining * 1000))), &ready)

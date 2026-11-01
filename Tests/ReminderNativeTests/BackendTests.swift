@@ -14,6 +14,12 @@ private final class OfflineBridge: RNBridge {
     var patch: [AnyHashable: Any] = [:]
     var tagReads = 0
     var reminderListReads = 0
+    var queryRows: [[String: Any]] = []
+    var visitedIDs: [String] = []
+    var readBatches: [[String]] = []
+    var smartIDs: [String] = []
+    var searchCriteria: [[String: Any]] = []
+    var searchPage: (Int, Int)?
     var imageByteReads = 0
     var savedIDs: [String] = []
     var savedParentID: String?
@@ -32,11 +38,23 @@ private final class OfflineBridge: RNBridge {
     override func defaultList() throws -> String { "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB" }
     override func groups() throws -> [[String: Any]] { [] }
     override func smartLists() throws -> [[String: Any]] { [] }
-    override func templates() throws -> [[String: Any]] { [] }
+    var templateRows: [[String: Any]] = []
+    override func templates() throws -> [[String: Any]] { templateRows }
     override func tagCounts() throws -> [[String: Any]] { tagReads += 1; return [["name": "work", "openCount": 3, "totalCount": 5]] }
-    override func reminders(inList listID: String) throws -> [[String: Any]] {
-        reminderListReads += 1
-        throw Failure(.backend, "Full-list hydration must not occur in these tests")
+    override func contents(ofSmartList identifier: String, includeCompleted: Bool) throws -> [String] { smartIDs }
+    override func searchReminders(criteria: [[String: Any]], limit: Int, offset: Int) throws -> [[String: Any]] {
+        searchCriteria = criteria; searchPage = (limit, offset); return queryRows
+    }
+    override func reminders(inList listID: String?, identifiers: [String]?) throws -> [[String: Any]] {
+        if let identifiers { readBatches.append(identifiers) } else { reminderListReads += 1 }
+        let selected = try identifiers.map { ids in try ids.map { id in
+            guard let row = rows[id] ?? queryRows.first(where: { $0["id"] as? String == id }) else {
+                throw Failure(.notFound, "Missing requested reminder")
+            }
+            return row
+        } } ?? queryRows
+        visitedIDs += selected.map { $0["id"] as! String }
+        return selected
     }
     override func updateReminder(_ identifier: String, changes: [AnyHashable: Any]) throws {
         patch = changes; afterUpdate?()
@@ -47,7 +65,8 @@ private final class OfflineBridge: RNBridge {
     override func restoreReminders(_ identifiers: [String], toList listID: String, parentID: String?) throws {
         savedIDs = identifiers; savedParentID = parentID; afterRestore?()
     }
-    override func replaceTag(_ name: String, replacement: String?) throws -> NSNumber { NSNumber(value: receipt.count) }
+    var tagSelection: [String]?
+    override func replaceTag(_ name: String, replacement: String?) throws -> [String] { tagSelection ?? receipt }
 }
 
 struct NativeBackendTests {
@@ -62,6 +81,49 @@ struct NativeBackendTests {
     private func backend(_ bridge: OfflineBridge) -> NativeReminderBackend {
         NativeReminderBackend(openBridge: { bridge }, permission: { "fullAccess" })
     }
+    @Test func findUsesNativeCriteriaOrderAndPaginationWithoutLocalFiltering() throws {
+        let bridge = OfflineBridge()
+        // A native match need not contain the literal query in its title/notes.
+        bridge.queryRows = [row(child, title: "Native first"), row(root, title: "Native second")]
+        var query = ReminderQuery(); query.text = "needle"; query.matching = .prefix; query.list = list
+        query.flagged = false; query.hasDueDate = true; query.limit = 2; query.offset = 7
+        #expect(try backend(bridge).find(query).map(\.id) == [child, root])
+        #expect(bridge.searchPage?.0 == 2); #expect(bridge.searchPage?.1 == 7)
+        #expect(bridge.searchCriteria as NSArray == [
+            ["base": "textualField", "arg0": "needle", "arg1": 1],
+            ["base": "listID", "arg0": ["entityName": "REMList", "uuid": list], "arg1": ["includeForSiri": [:]]],
+            ["base": "isCompleted", "arg0": false], ["base": "isFlagged", "arg0": false],
+            ["base": "hasDueDate", "arg0": true]
+        ] as NSArray)
+        #expect(bridge.reminderListReads == 0); #expect(bridge.visitedIDs.isEmpty)
+        bridge.queryRows = [["id": root]]
+        #expect(throws: Failure.self) { try backend(bridge).find(query) }
+    }
+    @Test func completionCriterionHasThreeStatesAndExplicitCompletedTakesPrecedence() throws {
+        let bridge = OfflineBridge(), backend = backend(bridge)
+        bridge.queryRows = [row(root, completed: true)]
+        for (includeCompleted, completed, expected): (Bool, Bool?, Bool?) in [(false, nil, false), (true, nil, nil), (false, true, true), (true, false, false)] {
+            var query = ReminderQuery(); query.includeCompleted = includeCompleted; query.completed = completed
+            #expect(try backend.find(query).first?.fields.completed == true)
+            let criteria = bridge.searchCriteria.filter { $0["base"] as? String == "isCompleted" }
+            #expect(criteria.count == (expected == nil ? 0 : 1))
+            #expect(criteria.first?["arg0"] as? Bool == expected)
+        }
+    }
+    @Test func smartFindSlicesNativeIDsBeforeReadingAndRejectsCriteriaCombination() throws {
+        let bridge = OfflineBridge()
+        bridge.queryRows = [row(root), row(child), ["id": list]]
+        bridge.smartIDs = [root, child, list]
+        var query = ReminderQuery(); query.smartList = list; query.offset = 1; query.limit = 1
+        #expect(try backend(bridge).find(query).map(\.id) == [child])
+        #expect(bridge.visitedIDs == [child])
+        for completed in [false, true] {
+            query.completed = completed
+            #expect(throws: Failure.self) { try backend(bridge).find(query) }
+        }
+        query.completed = nil; query.text = "Unsupported combination"
+        #expect(throws: Failure.self) { try backend(bridge).find(query) }
+    }
     @Test func metadataCatalogNeverHydratesUnrelatedReminderOrTags() throws {
         let bridge = OfflineBridge(), backend = backend(bridge)
         #expect(try backend.catalog(includeTags: false).tags.isEmpty)
@@ -70,6 +132,14 @@ struct NativeBackendTests {
         #expect(try backend.catalog(includeTags: true).tags == [Tag(name: "work", openCount: 3, totalCount: 5)])
         #expect(bridge.tagReads == 1)
         #expect(bridge.reminderListReads == 0)
+    }
+    @Test func templateAppearanceUsesTheSameColorProjectionAsLists() throws {
+        let bridge = OfflineBridge()
+        bridge.templateRows = [["id": root, "name": "Custom", "color": ["name": "custom", "hex": "#123456"], "icon": "star"],
+            ["id": child, "name": "Blue", "color": ["name": "lightBlue"]], ["id": list, "name": "Plain"]]
+        #expect(try backend(bridge).catalog(includeTags: false).templates == [
+            NamedEntity(id: root, name: "Custom", color: "#123456", icon: "star"),
+            NamedEntity(id: child, name: "Blue", color: "light-blue"), NamedEntity(id: list, name: "Plain")])
     }
     @Test func ordinaryReadsUseImageMetadataAndExplicitImageReadsBytes() throws {
         let bridge = OfflineBridge(), backend = backend(bridge)
@@ -92,12 +162,19 @@ struct NativeBackendTests {
         #expect(bridge.patch.keys.compactMap { $0 as? String }.sorted() == ["title"])
         #expect(Set(result.affectedIDs) == [root, child])
         #expect(bridge.reminderListReads == 0)
+        #expect(bridge.readBatches == [[root, child]])
     }
     @Test func tagReceiptUsesRequestSelectionNotAnEarlierSnapshot() throws {
         let bridge = OfflineBridge(); bridge.receipt = [child]; bridge.rows[child] = row(child)
         let result = try backend(bridge).tag(.rename("work", name: "job"))
         #expect(result.affectedIDs == [child])
         #expect(bridge.reminderListReads == 0)
+        bridge.tagSelection = [root]
+        do { _ = try backend(bridge).tag(.rename("work", name: "job")); Issue.record("Different same-sized receipt must fail") }
+        catch let failure as Failure {
+            #expect(failure.code == .outcomeUnknown)
+            #expect(Set(failure.affectedIDs) == [root, child])
+        }
     }
     @Test func creationIncludesAllRequestOwnedAffectedIDs() throws {
         let bridge = OfflineBridge(); bridge.receipt = [root, child]

@@ -29,8 +29,10 @@ public final class RuntimeCancellation: @unchecked Sendable {
 measured with monotonic uptime from call entry, not an absolute Date. Default is
 30 seconds; setup should pass `RuntimeLimits.setupDeadline` (120 seconds).
 The duration includes handshake, request IO, response IO, and worker exit.
-Cancellation/deadline terminates the process group with SIGTERM, allows 100 ms,
-then SIGKILLs and reaps the direct child. Poll responsiveness is at most 20 ms,
+Cancellation/deadline terminates the process group with SIGTERM, allows 100 ms
+if the leader is still running, then SIGKILLs and reaps the direct child. An already
+exited leader triggers immediate group cleanup and bounded pipe draining; descendants
+holding inherited pipes cannot delay completion until the request deadline. Poll responsiveness is at most 20 ms,
 plus bounded frame processing and cleanup; this is not a hard real-time guarantee
 against kernel stalls. Even successful calls reap the worker before returning.
 The caller must not independently waitpid/reap Runtime's children.

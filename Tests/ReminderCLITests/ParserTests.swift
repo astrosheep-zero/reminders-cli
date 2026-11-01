@@ -20,6 +20,10 @@ struct ParserTests {
         #expect(draft.fields.assigneeID == "me")
         #expect(draft.fields.flagged)
     }
+    @Test func creationCanDeferListSelectionToCore() throws {
+        #expect(try command(["add", "Title"]) == .create(ReminderDraft(fields: ReminderFields(title: "Title", listID: ""))))
+        #expect(try command(["add", "Child", "--fields-json", #"{"parentID":"P"}"#]) == .create(ReminderDraft(fields: ReminderFields(title: "Child", listID: "", parentID: "P"))))
+    }
     @Test func patchPreservesAbsentSetAndClear() throws {
         guard case .update(let id, let version, let patch) = try command([
             "edit", "id", "--version", "v1", "--set-json", #"{"flagged":false,"tags":[],"notes":""}"#,
@@ -32,10 +36,11 @@ struct ParserTests {
         #expect(patch.title == .absent)
     }
     @Test func queryAndSmartFilters() throws {
-        guard case .find(let query) = try command(["find", "--query-json", #"{"includeCompleted":true,"flagged":false,"repeating":true,"hasLocation":true,"tags":["x"],"dueBefore":{"kind":"date","value":{"year":2030,"month":1,"day":1}}}"#, "--limit", "12"]) else { throw CLIParser.invalid("Expected find") }
-        #expect(query.limit == 12); #expect(query.flagged == false); #expect(query.includeCompleted)
-        let filters: [SmartFilter] = [.tags(["work"], match: .all), .date(.overdue), .time(fromHour: 8, fromMinute: 0, toHour: 17, toMinute: 30), .priorities([.high]), .flagged(true), .lists(["L"]), .location(.arriving)]
-        let text = #"[{"kind":"tags","value":["work"],"match":"all"},{"kind":"date","value":{"kind":"overdue"}},{"kind":"time","fromHour":8,"fromMinute":0,"toHour":17,"toMinute":30},{"kind":"priorities","value":["high"]},{"kind":"flagged","value":true},{"kind":"lists","value":["L"]},{"kind":"location","value":"arriving"}]"#
+        guard case .find(let query) = try command(["find", "--query-json", #"{"text":"coffee","matching":"prefix","includeCompleted":true,"completed":true,"flagged":false,"repeating":true,"hasLocation":true,"hasDueDate":false,"offset":4}"#, "--limit", "12"]) else { throw CLIParser.invalid("Expected find") }
+        #expect(query.limit == 12); #expect(query.flagged == false); #expect(query.includeCompleted); #expect(query.completed == true)
+        #expect(query.matching == .prefix); #expect(query.offset == 4); #expect(query.hasDueDate == false)
+        let filters: [SmartFilter] = [.tags(["work"], match: .all), .date(.relative(past: 0, future: 7, unit: .days)), .priorities([.high]), .flagged(true), .lists(["L"]), .location(.gettingInCar)]
+        let text = #"[{"kind":"tags","value":["work"],"match":"all"},{"kind":"date","value":{"kind":"relative","past":0,"future":7,"unit":"days"}},{"kind":"priorities","value":["high"]},{"kind":"flagged","value":true},{"kind":"lists","value":["L"]},{"kind":"location","value":"gettingInCar"}]"#
         guard case .smartList(.create(let smart)) = try command(["smart-lists", "add", "Today", "--definition-json", "{\"filters\":\(text)}"]) else { throw CLIParser.invalid("Expected smart list") }
         #expect(smart.filters == filters); #expect(smart.name == "Today")
     }
@@ -81,12 +86,13 @@ struct ParserTests {
     }
     @Test func invalidInputsDoNotReadImageOrReachWorker() {
         let samples: [[String]] = [
-            ["edit", "id"], ["done", "id"], ["delete", "id"], ["add", "Title"],
+            ["edit", "id"], ["done", "id"], ["delete", "id"],
             ["find", "--selector", "anything"], ["find", "--limit", "0"], ["show"],
             ["find", "--text", "x", "--text", "y"], ["edit", "id", "--version", "v"],
             ["edit", "id", "--version", "v", "--set-json", #"{"notes":null}"#],
             ["edit", "id", "--version", "v", "--set-json", #"{"notes":"x"}"#, "--clear", "notes"],
             ["edit", "id", "--version", "v", "--clear", "due,due"],
+            ["add", "T", "--list", "L", "--fields-json", #"{"listID":"other"}"#],
             ["add", "T", "--list", "L", "--fields-json", #"{"unknown":1}"#],
             ["add", "T", "--list", "L", "--fields-json", #"{"priority":"critical"}"#],
             ["add", "T", "--list", "L", "--fields-json", #"{"due":{"kind":"date","value":{"year":2030,"month":2,"day":31}}}"#],

@@ -106,6 +106,10 @@ public protocol ReminderBackend: AnyObject {
     func checkSupport(for command: Command) throws
     func catalog(includeTags: Bool) throws -> Catalog
     func find(_ query: ReminderQuery) throws -> [Reminder]
+    /// Exhaustive active reminders, including completed and children; nil selects all lists. Never silently truncate.
+    func reminders(listID: String?) throws -> [Reminder]
+    /// Complete native title-predicate results, including completed reminders; never silently truncate.
+    func reminders(matchingTitle: String) throws -> [Reminder]
     func reminder(id: String) throws -> Reminder?
     func image(reminderID: String, imageID: String) throws -> ImageInput
     func restorableState(id: String) throws -> RestorableState
@@ -129,6 +133,8 @@ public extension ReminderBackend {
     func checkSupport(for command: Command) throws { throw Failure(.unsupported, "Backend does not support this command") }
     func catalog(includeTags: Bool) throws -> Catalog { throw Failure(.unsupported, "Catalog unavailable") }
     func find(_ query: ReminderQuery) throws -> [Reminder] { throw Failure(.unsupported, "Find unavailable") }
+    func reminders(listID: String?) throws -> [Reminder] { throw Failure(.unsupported, "Exhaustive reminder read unavailable") }
+    func reminders(matchingTitle: String) throws -> [Reminder] { throw Failure(.unsupported, "Title lookup unavailable") }
     func reminder(id: String) throws -> Reminder? { throw Failure(.unsupported, "Reminder lookup unavailable") }
     func image(reminderID: String, imageID: String) throws -> ImageInput { throw Failure(.unsupported, "Image read unavailable") }
     func restorableState(id: String) throws -> RestorableState { throw Failure(.unsupported, "Recovery lookup unavailable") }

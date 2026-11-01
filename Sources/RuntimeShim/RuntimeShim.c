@@ -156,11 +156,17 @@ int rr_reap(int32_t pid, int *status) {
 }
 
 int rr_stop(int32_t pid, int *status) {
+    // Observe without reaping so the process group ID cannot be reused before
+    // it is signalled. A finished leader needs no grace period of its own.
+    int observed_status = 0;
+    int exited = rr_reap(pid, &observed_status);
     kill(-pid, SIGTERM);
     kill(pid, SIGTERM);
-    // Don't reap until after signalling the group: a reaped PID could be reused.
-    struct timespec grace = {0, 100000000};
-    while (nanosleep(&grace, &grace) < 0 && errno == EINTR) {}
+    if (exited != 1) {
+        struct timespec grace = {0, 100000000};
+        while (nanosleep(&grace, &grace) < 0 && errno == EINTR) {}
+    }
+    // Always terminate remaining group members, even if the leader had exited.
     kill(-pid, SIGKILL);
     kill(pid, SIGKILL);
     int raw = 0;

@@ -126,12 +126,16 @@ public struct Reminder: Codable, Sendable, Equatable {
     public var fields: ReminderFields
     public var images: [ImageAttachment]
     public var childIDs: [String]
-    public init(id: String, fields: ReminderFields, images: [ImageAttachment] = [], childIDs: [String] = []) {
+    public var creationDate: Date?, lastModifiedDate: Date?, completionDate: Date?
+    public init(id: String, fields: ReminderFields, images: [ImageAttachment] = [], childIDs: [String] = [],
+                creationDate: Date? = nil, lastModifiedDate: Date? = nil, completionDate: Date? = nil) {
         self.id = id; self.fields = fields; self.images = images; self.childIDs = childIDs
+        self.creationDate = creationDate; self.lastModifiedDate = lastModifiedDate; self.completionDate = completionDate
     }
     /// SHA-256 of sorted-key JSON. Set-like collections are canonicalized; semantic order is preserved.
     public func version() throws -> String {
         var canonical = self
+        canonical.creationDate = nil; canonical.lastModifiedDate = nil; canonical.completionDate = nil
         canonical.id = id.lowercased(); canonical.fields.listID = fields.listID.lowercased()
         canonical.fields.parentID = fields.parentID?.lowercased(); canonical.fields.sectionID = fields.sectionID?.lowercased()
         canonical.fields.assigneeID = fields.assigneeID?.lowercased()
@@ -215,21 +219,21 @@ public struct ReminderDraft: Codable, Sendable, Equatable {
     public var images: [ImageInput]
     public init(fields: ReminderFields, images: [ImageInput] = []) { self.fields = fields; self.images = images }
 }
+public enum SearchMatching: String, Codable, Sendable, Equatable { case exact, prefix, word }
 public struct ReminderQuery: Codable, Sendable, Equatable {
     public var text: String?
+    public var matching: SearchMatching?
     public var list: String?
     public var smartList: String?
-    public var section: String?
     public var includeCompleted: Bool = false
+    public var completed: Bool?
     public var flagged: Bool?
     public var urgent: Bool?
     public var repeating: Bool?
     public var hasLocation: Bool?
-    public var assigneeID: String?
-    public var tags: [String] = []
-    public var dueOnOrAfter: ReminderDate?
-    public var dueBefore: ReminderDate?
+    public var hasDueDate: Bool?
     public var limit: Int = 100
+    public var offset: Int = 0
     public init() {}
 }
 
@@ -270,7 +274,10 @@ public struct ReminderList: Codable, Sendable, Equatable {
 public struct NamedEntity: Codable, Sendable, Equatable {
     public var id: String
     public var name: String
-    public init(id: String, name: String) { self.id = id; self.name = name }
+    public var color: String?, icon: String?
+    public init(id: String, name: String, color: String? = nil, icon: String? = nil) {
+        self.id = id; self.name = name; self.color = color; self.icon = icon
+    }
 }
 public struct Section: Codable, Sendable, Equatable {
     public var id: String
@@ -291,15 +298,14 @@ public struct Tag: Codable, Sendable, Equatable {
 }
 public enum MatchMode: String, Codable, Sendable { case all, any }
 public enum DateFilter: Codable, Sendable, Equatable {
-    case none, any, overdue
+    case none, any
     case range(from: CalendarDate?, before: CalendarDate?)
     case relative(past: Int, future: Int, unit: AlertUnit)
 }
-public enum LocationFilter: String, Codable, Sendable { case any, none, arriving, leaving, gettingInCar, gettingOutOfCar }
+public enum LocationFilter: String, Codable, Sendable { case none, gettingInCar, gettingOutOfCar }
 public enum SmartFilter: Codable, Sendable, Equatable {
     case tags([String], match: MatchMode)
     case date(DateFilter)
-    case time(fromHour: Int, fromMinute: Int, toHour: Int, toMinute: Int)
     case priorities([Priority])
     case flagged(Bool)
     case lists([String])

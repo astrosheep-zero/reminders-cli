@@ -96,18 +96,17 @@ enum Shapes {
         "priority": priority, "flagged": .bool, "urgent": .bool, "completed": .bool, "tags": .array(.string),
         "parentID": .string, "sectionID": .string, "position": position, "assigneeID": .string]
     static let fields = Schema.fields(reminderFields)
-    static let query = Schema.fields(["text": .string, "list": .string, "smartList": .string, "section": .string,
-        "includeCompleted": .bool, "flagged": .bool, "urgent": .bool, "repeating": .bool, "hasLocation": .bool,
-        "assigneeID": .string, "tags": .array(.string), "dueOnOrAfter": reminderDate, "dueBefore": reminderDate, "limit": .int])
+    static let query = Schema.fields(["text": .string, "matching": .choice("exact prefix word"), "list": .string, "smartList": .string,
+        "includeCompleted": .bool, "completed": .bool, "flagged": .bool, "urgent": .bool, "repeating": .bool, "hasLocation": .bool,
+        "hasDueDate": .bool, "limit": .int, "offset": .int])
     static let list = Schema.fields(["name": .string, "color": .string, "icon": .string, "groupID": .string,
         "pinned": .bool, "kind": .choice("standard groceries"), "sort": .choice("manual due creation priority title"), "position": position])
     static let filter = Schema.tagged([
         "tags": .fields(["value": .array(.string), "match": .choice("all any")], "value match"),
-        "date": .fields(["value": .tagged(["none": .fields([:]), "any": .fields([:]), "overdue": .fields([:]),
-            "range": .fields(["from": date, "before": date]), "relative": .fields(["past": .int, "future": .int, "unit": unit], "past future unit")])], "value"),
-        "time": .fields(["fromHour": .int, "fromMinute": .int, "toHour": .int, "toMinute": .int], "fromHour fromMinute toHour toMinute"),
-        "priorities": .fields(["value": .array(priority)], "value"), "flagged": .fields(["value": .bool], "value"),
-        "lists": .fields(["value": .array(.string)], "value"), "location": .fields(["value": .choice("any none arriving leaving gettingInCar gettingOutOfCar")], "value"),
+        "date": .fields(["value": .tagged(["none": .fields([:]), "any": .fields([:]),
+            "range": .fields(["from": date, "before": date]), "relative": .fields(["past": .int, "future": .int, "unit": .choice("hours days weeks months")], "past future unit")])], "value"),
+        "priorities": .fields(["value": .array(.choice("low medium high"))], "value"), "flagged": .fields(["value": .bool], "value"),
+        "lists": .fields(["value": .array(.string)], "value"), "location": .fields(["value": .choice("none gettingInCar gettingOutOfCar")], "value"),
         "unknown": .fields(["key": .string, "payload": .string], "key payload")])
     static let smart = Schema.fields(["id": .string, "name": .string, "color": .string, "icon": .string,
         "match": .choice("all any"), "filters": .array(filter)])

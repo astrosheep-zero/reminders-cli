@@ -63,6 +63,10 @@ public final class NativeReminderBackend: ReminderBackend {
         } else { code = .backend }
         return Failure(code, native.localizedDescription, affectedIDs: native.userInfo["affectedIDs"] as? [String] ?? [])
     }
+    private func checkFeatures(_ features: [String]) throws {
+        var error: NSError?
+        guard RNPreflight(features, &error) else { throw Self.failure(error ?? NSError(domain: RNErrorDomain, code: 1)) }
+    }
     public func checkSupport(for command: Command) throws {
         // Validate values first, then inspect command-specific Objective-C class
         // metadata. No store objects, prompts, requests or staged files are created.
@@ -84,8 +88,9 @@ public final class NativeReminderBackend: ReminderBackend {
             case .list(.create(let fields)), .list(.update(_, let fields)):
                 _ = try Translation.listFields(fields); features = ["list.update", "appearance"]
                 if case .list(.create) = command { features.append("list.create") }
-            case .list(.delete): features = ["list.delete"]
-            case .list(.clearCompleted), .delete: features = ["reminder.delete"]
+            case .list(.delete): features = ["reminder.list", "list.delete"]
+            case .list(.clearCompleted): features = ["reminder.list", "reminder.delete"]
+            case .delete: features = ["reminder.delete"]
             case .restore: features = ["reminder.restore"]
             case .complete: features = ["reminder.update", "completed"]
             case .group(.create): features = ["group.create"]
@@ -99,20 +104,21 @@ public final class NativeReminderBackend: ReminderBackend {
             case .template(.create): features = ["template.create"]
             case .template(.use): features = ["template.use"]
             case .template(.delete): features = ["template.delete"]
-            case .tag: features = ["tags", "reminder.update"]
-            case .find(let query) where query.smartList != nil: features = ["smart.find"]
+            case .tag: features = ["tags.read", "tags", "reminder.update"]
+            case .catalog(true): features = ["tags.read"]
+            case .find(let query): features = [query.smartList == nil ? "reminder.find" : "smart.find"]
             default: break
             }
-            if !features.isEmpty {
-                var error: NSError?
-                guard RNPreflight(features, &error) else { throw Self.failure(error ?? NSError(domain: RNErrorDomain, code: 1)) }
-            }
+            if !features.isEmpty { try checkFeatures(features) }
             // Resolved account capability checks are reads before mutationStarted.
             // Initial unresolved names defer to Core's normalized second preflight.
             if case .restore(_, let list) = command, let list, UUID(uuidString: list) != nil {
                 try store().validateRecovery(forList: list)
             }
             if case .smartList(.create) = command { try store().validateSmartListCreation() }
+            if case .tag(let action) = command {
+                switch action { case .rename(let name, _), .delete(let name, _): try store().validateTag(name) }
+            }
         }
     }
     private func rawReminder(_ id: String, concealed: Bool = false, imageBytes: Bool = false) throws -> [String: Any]? {
@@ -143,10 +149,8 @@ public final class NativeReminderBackend: ReminderBackend {
             return try rawReminder(id, concealed: true) == nil ? .absent : .restorable
         }
     }
-    private func allReminders(listID: String? = nil) throws -> [Reminder] {
-        let store = try store()
-        let ids: [String] = try listID.map { [$0] } ?? store.lists().map { try Translation.value($0, "id") }
-        return try ids.flatMap { try store.reminders(inList: $0).map(Translation.reminder) }
+    private func readReminders(listID: String? = nil, identifiers: [String]? = nil) throws -> [Reminder] {
+        try store().reminders(inList: listID, identifiers: identifiers).map(Translation.reminder)
     }
     public func catalog(includeTags: Bool) throws -> Catalog {
         try serialized {
@@ -166,32 +170,37 @@ public final class NativeReminderBackend: ReminderBackend {
         }
     }
     private func named(_ raw: [String: Any]) throws -> NamedEntity {
-        try NamedEntity(id: Translation.value(raw, "id"), name: Translation.value(raw, "name"))
+        try NamedEntity(id: Translation.value(raw, "id"), name: Translation.value(raw, "name"),
+            color: Translation.color(raw["color"] as? [String: Any]), icon: raw["icon"] as? String)
+    }
+    public func reminders(listID: String?) throws -> [Reminder] {
+        try serialized { try checkFeatures(["reminder.list"]); return try readReminders(listID: listID) }
+    }
+    public func reminders(matchingTitle title: String) throws -> [Reminder] {
+        try serialized { try checkFeatures(["reminder.title"]); return try store().reminders(matchingTitle: title).map(Translation.reminder) }
     }
     public func find(_ query: ReminderQuery) throws -> [Reminder] {
         try serialized {
-            var result: [Reminder]
+            try Validation.query(query)
             if let smart = query.smartList {
-                result = try store().contents(ofSmartList: smart, includeCompleted: query.includeCompleted).map(requireReminder)
-            } else { result = try allReminders(listID: query.list) }
-            // These are explicit ordinary-query predicates, not an approximation of
-            // native smart-list semantics. The latter is evaluated by remindd above.
-            result = result.filter { reminder in
-                let f = reminder.fields
-                return (query.includeCompleted || !f.completed)
-                    && (query.list == nil || f.listID.caseInsensitiveCompare(query.list!) == .orderedSame)
-                    && (query.text == nil || f.title.localizedCaseInsensitiveContains(query.text!) || (f.notes?.localizedCaseInsensitiveContains(query.text!) ?? false))
-                    && (query.section == nil || f.sectionID?.caseInsensitiveCompare(query.section!) == .orderedSame)
-                    && (query.flagged == nil || f.flagged == query.flagged)
-                    && (query.urgent == nil || f.urgent == query.urgent)
-                    && (query.repeating == nil || (f.recurrence != nil) == query.repeating)
-                    && (query.hasLocation == nil || (f.location != nil) == query.hasLocation)
-                    && (query.assigneeID == nil || f.assigneeID?.caseInsensitiveCompare(query.assigneeID!) == .orderedSame)
-                    && query.tags.allSatisfy { name in f.tags.contains { $0.caseInsensitiveCompare(name) == .orderedSame } }
-                    && (query.dueOnOrAfter == nil || f.due.map { !Validation.components($0).lexicographicallyPrecedes(Validation.components(query.dueOnOrAfter!)) } == true)
-                    && (query.dueBefore == nil || f.due.map { Validation.components($0).lexicographicallyPrecedes(Validation.components(query.dueBefore!)) } == true)
+                let ids = try store().contents(ofSmartList: smart, includeCompleted: query.includeCompleted)
+                return try readReminders(identifiers: Array(ids.dropFirst(query.offset).prefix(query.limit)))
             }
-            return Array(result.prefix(max(0, query.limit)))
+            var criteria: [[String: Any]] = []
+            if let text = query.text {
+                let matching: Int
+                switch query.matching ?? .word { case .exact: matching = 0; case .prefix: matching = 1; case .word: matching = 2 }
+                criteria.append(["base": "textualField", "arg0": text, "arg1": matching])
+            }
+            if let list = query.list {
+                criteria.append(["base": "listID", "arg0": ["entityName": "REMList", "uuid": list], "arg1": ["includeForSiri": [:]]])
+            }
+            for (name, value) in [("isCompleted", query.completed ?? (query.includeCompleted ? nil : false)),
+                                  ("isFlagged", query.flagged), ("isUrgentForCurrentUser", query.urgent),
+                                  ("isRecurrent", query.repeating), ("hasLocation", query.hasLocation), ("hasDueDate", query.hasDueDate)] {
+                if let value { criteria.append(["base": name, "arg0": value]) }
+            }
+            return try store().searchReminders(criteria: criteria, limit: query.limit, offset: query.offset).map(Translation.reminder)
         }
     }
     private static func same(_ lhs: String?, _ rhs: String?) -> Bool {
@@ -228,7 +237,7 @@ public final class NativeReminderBackend: ReminderBackend {
         let receipt = Array(Set(native.lastSavedReminderIDs + [id])).sorted()
         let introduced = Set(native.lastIntroducedReminderIDs.map { $0.uppercased() })
         return try readback(ids: receipt) {
-            let changed = try receipt.map(requireReminder)
+            let changed = try readReminders(identifiers: receipt)
             try confirm(changed, introduced)
             try verifyImages(images, lease: staging, ownerID: id, existingIDs: existingIDs); try staging?.release()
             return MutationResult(affectedIDs: receipt, reminders: changed)
@@ -283,7 +292,7 @@ public final class NativeReminderBackend: ReminderBackend {
             try native.restoreReminders(ids, toList: listID, parentID: expectedParent)
             let receipt = Array(Set(ids + native.lastSavedReminderIDs)).sorted()
             return try readback(ids: receipt) {
-                let reminders = try receipt.map(requireReminder)
+                let reminders = try readReminders(identifiers: receipt)
                 for reminder in reminders {
                     if expectedParent.map({ reminder.id.caseInsensitiveCompare($0) == .orderedSame }) == true {
                         guard reminder.fields.listID.caseInsensitiveCompare(listID) == .orderedSame, reminder.fields.parentID == nil,
@@ -311,7 +320,7 @@ public final class NativeReminderBackend: ReminderBackend {
         return try readback(ids: [id] + reminderIDs) {
             let defaultID = try native.defaultList()
             guard let raw = try native.lists().first(where: { ($0["id"] as? String)?.caseInsensitiveCompare(id) == .orderedSame }) else { throw Failure(.backend, "Saved list missing on readback") }
-            return MutationResult(affectedIDs: [id] + reminderIDs, reminders: try reminderIDs.map(requireReminder), lists: [try Translation.list(raw, defaultID: defaultID)])
+            return MutationResult(affectedIDs: [id] + reminderIDs, reminders: try readReminders(identifiers: reminderIDs), lists: [try Translation.list(raw, defaultID: defaultID)])
         }
     }
     public func list(_ action: ListAction) throws -> MutationResult {
@@ -322,13 +331,13 @@ public final class NativeReminderBackend: ReminderBackend {
             case .update(let id, let fields): try native.updateList(id, changes: Translation.listFields(fields)); return try listReceipt(id)
             case .delete(let id, let confirmed):
                 guard confirmed else { throw Failure(.invalidInput, "List deletion needs confirmation") }
-                let affected = try allReminders(listID: id).map(\.id)
+                let affected = try readReminders(listID: id).map(\.id)
                 try native.deleteList(id); return MutationResult(affectedIDs: [id] + affected)
             case .clearCompleted(let id, let confirmed):
                 guard confirmed else { throw Failure(.invalidInput, "Clear-completed needs confirmation") }
                 // Operations has already journaled the same expanded selection.
                 // A parent and every child enter one request/save, never one save per row.
-                let all = try allReminders(listID: id)
+                let all = try readReminders(listID: id)
                 var selected = Set(all.filter(\.fields.completed).map(\.id))
                 for item in all where selected.contains(item.id) { selected.formUnion(item.childIDs) }
                 return try deleteReminders(ids: selected.sorted())
@@ -370,11 +379,11 @@ public final class NativeReminderBackend: ReminderBackend {
                 from = name; replacement = nil
             }
             let native = try store()
-            let count = try native.replaceTag(from, replacement: replacement).intValue
+            let selected = try native.replaceTag(from, replacement: replacement)
             let affected = native.lastSavedReminderIDs
-            return try readback(ids: affected) {
-                guard count == affected.count else { throw Failure(.backend, "Native tag receipt does not cover the exact request-selected rows") }
-                return MutationResult(affectedIDs: affected, reminders: try affected.map(requireReminder))
+            return try readback(ids: Array(Set(selected + affected)).sorted()) {
+                guard Set(selected.map { $0.uppercased() }) == Set(affected.map { $0.uppercased() }) else { throw Failure(.backend, "Native tag receipt does not cover the exact request-selected rows") }
+                return MutationResult(affectedIDs: affected, reminders: try readReminders(identifiers: affected))
             }
         }
     }

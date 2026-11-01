@@ -32,7 +32,12 @@ FOUNDATION_EXPORT BOOL RNPreflight(NSArray<NSString *> *features, NSError **erro
 /// Successful miss returns NSNull; all failures return nil plus error.
 /// imageBytes is NO for ordinary reads and post-save confirmation; only explicit image reads pass YES.
 - (nullable id)reminder:(NSString *)identifier concealed:(BOOL)concealed imageBytes:(BOOL)imageBytes error:(NSError **)error;
-- (nullable NSArray<NSDictionary<NSString *, id> *> *)remindersInList:(NSString *)listID error:(NSError **)error;
+/// Full models in requested ID order, or exhaustive list enumeration when IDs are nil.
+/// Each selected batch is hydrated together, including completed reminders and children.
+- (nullable NSArray<NSDictionary<NSString *, id> *> *)remindersInList:(nullable NSString *)listID identifiers:(nullable NSArray<NSString *> *)identifiers error:(NSError **)error NS_SWIFT_NAME(reminders(inList:identifiers:));
+- (nullable NSArray<NSDictionary<NSString *, id> *> *)remindersMatchingTitle:(NSString *)title error:(NSError **)error NS_SWIFT_NAME(reminders(matchingTitle:));
+/// Native criteria matching/order/paging; hydrates the returned ID page in one batch.
+- (nullable NSArray<NSDictionary<NSString *, id> *> *)searchRemindersWithCriteria:(NSArray<NSDictionary<NSString *, id> *> *)criteria limit:(NSInteger)limit offset:(NSInteger)offset error:(NSError **)error NS_SWIFT_NAME(searchReminders(criteria:limit:offset:));
 - (nullable NSArray<NSDictionary<NSString *, id> *> *)smartListsWithError:(NSError **)error;
 - (nullable NSArray<NSString *> *)contentsOfSmartList:(NSString *)identifier includeCompleted:(BOOL)completed error:(NSError **)error;
 - (nullable NSArray<NSDictionary<NSString *, id> *> *)templatesWithError:(NSError **)error;
@@ -56,6 +61,7 @@ FOUNDATION_EXPORT BOOL RNPreflight(NSArray<NSString *> *features, NSError **erro
 - (nullable NSString *)createTemplate:(NSString *)name list:(NSString *)listID includeCompleted:(BOOL)completed error:(NSError **)error;
 - (nullable NSString *)useTemplate:(NSString *)identifier name:(nullable NSString *)name error:(NSError **)error;
 - (BOOL)deleteTemplate:(NSString *)identifier error:(NSError **)error;
-- (nullable NSNumber *)replaceTag:(NSString *)name replacement:(nullable NSString *)replacement error:(NSError **)error;
+- (BOOL)validateTag:(NSString *)name error:(NSError **)error;
+- (nullable NSArray<NSString *> *)replaceTag:(NSString *)name replacement:(nullable NSString *)replacement error:(NSError **)error;
 @end
 NS_ASSUME_NONNULL_END

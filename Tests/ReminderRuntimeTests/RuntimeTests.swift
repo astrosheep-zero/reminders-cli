@@ -108,6 +108,34 @@ struct ReminderRuntimeTests {
         }
     }
 
+    @Test func exitedWorkerDoesNotWaitForDescendantPipes() throws {
+        let artifact = fixture.directory.appendingPathComponent("descendant-pid")
+        let bytes = Data("finished".utf8)
+        let reply = run("inheritedPipes", data: bytes, deadline: 5, artifact: artifact.path)
+        let pid = try #require(Int32(String(contentsOf: artifact, encoding: .utf8)))
+        #expect(reply.outcome == .result(bytes))
+        #expect(reply.issue == nil)
+        #expect(reply.exitStatus == 0)
+        // Give the OS time to reap the orphaned descendant after the group kill.
+        let end = ProcessInfo.processInfo.systemUptime + 2
+        while kill(pid, 0) == 0 && ProcessInfo.processInfo.systemUptime < end { usleep(10_000) }
+        let gone = kill(pid, 0) == -1 && errno == ESRCH
+        if !gone { kill(pid, SIGKILL) } // Avoid leaving the fixture behind on failure.
+        #expect(gone)
+    }
+
+    @Test func normalExitsDoNotEachWaitForTerminationGrace() {
+        // Aggregate the delay across calls so this allows ample process launch
+        // overhead while catching the former unconditional 100 ms per call.
+        let start = ProcessInfo.processInfo.systemUptime
+        for _ in 0..<25 {
+            let reply = run("echo")
+            #expect(reply.issue == nil)
+            #expect(reply.outcome == .result(Data("opaque\u{0}data".utf8)))
+        }
+        #expect(ProcessInfo.processInfo.systemUptime - start < 2.25)
+    }
+
     @Test func trailingCorruptionInvalidatesFinalResult() {
         for mode in ["trailingAfter", "mutatingTrailing", "duplicateResult", "mutatingDuplicateResult"] {
             let reply = run(mode)

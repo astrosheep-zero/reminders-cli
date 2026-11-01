@@ -126,7 +126,8 @@ enum Translation {
         return try Reminder(id: value(raw, "id"), fields: f, images: images.map { image in
             try ImageAttachment(id: value(image, "id"), fileName: value(image, "fileName"), contentType: value(image, "type"),
                 byteCount: value(image, "size"))
-        }, childIDs: value(raw, "childIDs"))
+        }, childIDs: value(raw, "childIDs"), creationDate: raw["creationDate"] as? Date,
+            lastModifiedDate: raw["lastModifiedDate"] as? Date, completionDate: raw["completionDate"] as? Date)
     }
     /// Only creation starts from full fields. Updates translate sparse Change
     /// values below, including explicit set-to-same intent.
@@ -191,15 +192,17 @@ enum Translation {
         if color.range(of: "^#[0-9a-fA-F]{6}$", options: .regularExpression) != nil { return ["hex": color.uppercased()] }
         throw Failure(.invalidInput, "Unsupported native color \(color)")
     }
+    static func color(_ raw: [String: Any]?) -> String? {
+        let name = raw?["name"] as? String
+        return name == "custom" ? raw?["hex"] as? String : name == "lightBlue" ? "light-blue" : name
+    }
     static func list(_ raw: [String: Any], defaultID: String) throws -> ReminderList {
         let nativeSort = raw["sorting"] as? String ?? "default"
         let sort: ListSort
         if nativeSort == "default" { sort = .manual }
         else if let known = sorts.first(where: { $0.value == nativeSort })?.key { sort = known }
         else { throw Failure(.unsupported, "Native list sorting \(nativeSort) cannot be represented") }
-        let color = raw["color"] as? [String: Any]
-        let colorName = color?["name"] as? String
-        let f = try ListFields(name: value(raw, "name"), color: colorName == "custom" ? color?["hex"] as? String : colorName == "lightBlue" ? "light-blue" : colorName,
+        let f = try ListFields(name: value(raw, "name"), color: color(raw["color"] as? [String: Any]),
             icon: raw["icon"] as? String, groupID: raw["groupID"] as? String, pinned: value(raw, "pinned"),
             kind: (value(raw, "groceries") as Bool) ? .groceries : .standard, sort: sort,
             position: position(raw["position"] as? [String: Any]))

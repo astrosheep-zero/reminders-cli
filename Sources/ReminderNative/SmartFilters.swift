@@ -5,6 +5,7 @@ import ReminderCore
 /// they are never dropped, evaluated in Swift, or sent back as guessed edits.
 enum SmartFilters {
     static func data(_ smart: SmartList) throws -> Data {
+        try Validation.filters(smart.filters)
         var root: [String: Any] = ["operation": smart.match == .all ? "and" : "or"]
         for filter in smart.filters {
             let pair: (String, Any)
@@ -14,19 +15,14 @@ enum SmartFilters {
                 pair = ("hashtags", ["hashtags": ["include": names, "exclude": [], "operation": match == .all ? "and" : "or"]])
             case .flagged(let flag): pair = ("flagged", flag)
             case .lists(let ids): pair = ("lists", ["include": ids, "exclude": [], "operation": ids.count > 1 ? "or" : "and"])
-            case .priorities(let priorities):
-                guard !priorities.contains(.none) else { throw Failure(.unsupported, "Native smart filters have no proven 'none' priority representation") }
-                pair = ("priorities", priorities.map(\.rawValue))
+            case .priorities(let priorities): pair = ("priorities", priorities.map(\.rawValue))
             case .date(let date): pair = ("date", try storedDate(date))
             case .location(let location):
                 switch location {
                 case .none: pair = ("location", ["noLocation": ""])
                 case .gettingInCar: pair = ("location", ["vehicle": "connected"])
                 case .gettingOutOfCar: pair = ("location", ["vehicle": "disconnected"])
-                default: throw Failure(.unsupported, "This location filter has no lossless native representation without coordinates")
                 }
-            case .time:
-                throw Failure(.unsupported, "Native time filters use named periods, not arbitrary hour/minute ranges")
             }
             guard root[pair.0] == nil else { throw Failure(.invalidInput, "Duplicate native smart-filter family \(pair.0)") }
             root[pair.0] = pair.1
@@ -52,7 +48,6 @@ enum SmartFilters {
         switch filter {
         case .none: return ["noDate": ""]
         case .any: return ["any": ""]
-        case .overdue: throw Failure(.unsupported, "No proven native representation for an overdue-only smart filter")
         case .range(let from, let before):
             switch (from, before) {
             case (.some(let from), .some(let before)): return ["dateRange": [storedDay(from), storedDay(try shifted(before, by: -1))]]
@@ -61,13 +56,7 @@ enum SmartFilters {
             case (nil, nil): throw Failure(.invalidInput, "Date range needs a bound")
             }
         case .relative(let past, let future, let unit):
-            guard (past > 0 && future == 0) || (future > 0 && past == 0), unit != .minutes else {
-                throw Failure(.unsupported, "Native relative ranges require one direction and hour/day/week/month units")
-            }
-            let name: String
-            switch unit { case .minutes: throw Failure(.unsupported, "Minute filter unavailable")
-            case .hours: name = "hour"; case .days: name = "day"; case .weeks: name = "week"; case .months: name = "month" }
-            return ["relativeRange": ["direction": past > 0 ? "inPast" : "inNext", "magnitude": String(max(past, future)), "units": name, "includePastDue": false]]
+            return ["relativeRange": ["direction": past > 0 ? "inPast" : "inNext", "magnitude": String(max(past, future)), "units": String(unit.rawValue.dropLast()), "includePastDue": false]]
         }
     }
     static func decode(_ raw: [String: Any]) throws -> SmartList {
@@ -85,7 +74,7 @@ enum SmartFilters {
             switch key {
             case "flagged": decoded = (value as? Bool).map(SmartFilter.flagged)
             case "priorities":
-                if let strings = value as? [String], strings.allSatisfy({ Priority(rawValue: $0) != nil }) {
+                if let strings = value as? [String], strings.allSatisfy({ ["low", "medium", "high"].contains($0) }) {
                     decoded = .priorities(strings.map { Priority(rawValue: $0)! })
                 } else { decoded = nil }
             case "lists":
@@ -115,10 +104,8 @@ enum SmartFilters {
         }
         let operation = root["operation"] as? String
         if root["operation"] != nil && operation != "and" && operation != "or" { filters.append(try opaque("operation", root["operation"]!)) }
-        let color = raw["color"] as? [String: Any]
-        let name = color?["name"] as? String
         return try SmartList(id: Translation.value(raw, "id"), name: Translation.value(raw, "name"),
-            color: name == "custom" ? color?["hex"] as? String : name, icon: raw["icon"] as? String,
+            color: Translation.color(raw["color"] as? [String: Any]), icon: raw["icon"] as? String,
             match: operation == "or" ? .any : .all, filters: filters)
     }
     static func decodeDate(_ value: Any) throws -> DateFilter? {

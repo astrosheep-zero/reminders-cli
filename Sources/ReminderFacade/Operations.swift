@@ -69,24 +69,24 @@ struct Arguments {
 public enum FacadeOperations {
     public static let definitions: [OperationDefinition] = [
         .init("doctor", "", [:], "Inspect bundle/signature/authorization. Sentinel read only if already authorized; never prompts. A diagnostic report is not proof every check passed.") { _ in .init(request: .doctor) },
-        .init("find", "", ["query": Shapes.query, "text": .string, "list": .string, "limit": .int], "Find reminders; query supports dates, status, tags, smart lists and assignment. Default excludes completed, limit 100.") { a in
+        .init("find", "", ["query": Shapes.query, "text": .string, "list": .string, "limit": .int], "Find using native criteria or a smart list. completed overrides includeCompleted for ordinary queries. Default excludes completed; limit 100, offset 0.") { a in
             var query = try a.merged(ReminderQuery(), "query")
             if let text = a.text("text") { query.text = text }; if let list = a.text("list") { query.list = list }
             if a.values["limit"] != nil { query.limit = try a.decode(Int.self, "limit") }
-            guard query.limit > 0 else { throw invalid("limit must be positive") }; return .init(.find(query))
+            try Validation.query(query); return .init(.find(query))
         },
-        .init("show", "id", ["id": .string], "Show ID or exact title, including an optimistic version token.") { .init(.show($0.id)) },
-        .init("add", "title", ["title": .string, "list": .string, "fields": Shapes.fields, "images": Shapes.images], required: "list", "Create a reminder. Images are base64 bytes, never worker paths.") { a in
+        .init("show", "id", ["id": .string], "Show ID or native title-equals match, including an optimistic version token.") { .init(.show($0.id)) },
+        .init("add", "title", ["title": .string, "list": .string, "fields": Shapes.fields, "images": Shapes.images], "Create a reminder in the supplied list, parent's list or unique default list. Images are base64 bytes, never worker paths.") { a in
             let fields = try a.merged(ReminderFields(title: a.string("title"), listID: a.list), "fields")
-            guard fields.title == a.string("title"), fields.listID == a.list else { throw invalid("Create identity belongs in title/list, not fields") }
+            guard fields.title == a.string("title"), a.text("list") == nil || fields.listID == a.list else { throw invalid("Conflicting create title/list identity") }
             let images = try a.values["images"].map { _ in try a.decode([ImageInput].self, "images") } ?? []
-            try Validation.fields(fields, images: images); return .init(.create(ReminderDraft(fields: fields, images: images)))
+            try Validation.fields(fields, images: images, listRequired: false); return .init(.create(ReminderDraft(fields: fields, images: images)))
         },
         .init("edit", "id", ["id": .string, "version": .string, "set": Shapes.fields, "clear": .array(.choice(Shapes.reminderFields.keys.sorted().joined(separator: " "))), "images": Shapes.images, "removeImageIDs": .array(.string)], required: "version", "Sparse edit: omitted fields stay unchanged; set values or explicitly clear. Requires latest version; not atomic cross-device CAS.") { try .init(.update(id: $0.id, version: $0.version, patch: $0.patch())) },
         .init("done", "id", ["id": .string, "version": .string, "undo": .bool], required: "version", "Complete reminder; undo=true marks incomplete. Requires version.") { .init(.complete(id: $0.id, version: $0.version, completed: !$0.bool("undo"))) },
         .init("delete", "id", ["id": .string, "version": .string], required: "version", "Soft-delete reminder and known children with journal evidence. Requires version; no purge.") { .init(.delete(id: $0.id, version: $0.version)) },
         .init("deleted", "", [:], "Reconcile this tool's deletion journal only (toolOnly), not system Recently Deleted.") { _ in .init(.deleted) },
-        .init("catalog", "", [:], "Read all catalog families including tag counts (enumerates reminders).") { _ in .init(.catalog(includeTags: true)) },
+        .init("catalog", "", [:], "Read all catalog families including native tag selections and counts.") { _ in .init(.catalog(includeTags: true)) },
         .init("restore", "id", ["id": .string, "list": .string], "Restore root/children to saved destination or explicit list. Never retries uncertain saves.") { .init(.restore(id: $0.id, list: $0.text("list"))) },
         .init("image", "id imageID", ["id": .string, "imageID": .string], "Explicit image bytes read, returned as base64. May fail with native permission error; no prompt or invented permission fix.") { .init(.image(reminderID: $0.id, imageID: $0.string("imageID"))) },
         .init("lists", "", [:], "Read list metadata, default marker and already-joined members; no invitations.") { _ in .init(.catalog(includeTags: false), projection: "lists") },
@@ -106,9 +106,9 @@ public enum FacadeOperations {
         .init("sections rename", "id", ["id": .string, "list": .string, "name": .string], required: "list name", "Rename section in list.") { .init(.section(.rename(list: $0.list, section: $0.id, name: $0.name))) },
         .init("sections move", "id", ["id": .string, "list": .string, "position": Shapes.position], required: "list position", "Move section before/after a distinct neighbor in same list.") { try .init(.section(.move(list: $0.list, section: $0.id, position: $0.decode(Position.self, "position")))) },
         .init("sections delete", "id", ["id": .string, "list": .string, "confirmed": .bool], required: "list confirmed", "Delete section in list; confirmed must be true.") { .init(.section(.delete(list: $0.list, section: $0.id, confirmed: true))) },
-        .init("tags", "", [:], "Read tags with truthful open/total counts (enumerates reminders).") { _ in .init(.catalog(includeTags: true), projection: "tags") },
-        .init("tags rename", "id", ["id": .string, "name": .string], required: "name", "Rename exact tag and report affected reminder receipts.") { .init(.tag(.rename($0.id, name: $0.name))) },
-        .init("tags delete", "id", ["id": .string, "confirmed": .bool], required: "confirmed", "Remove exact tag from reminders; confirmed must be true.") { .init(.tag(.delete($0.id, confirmed: true))) },
+        .init("tags", "", [:], "Read native tag labels with open/total counts from their selected reminders.") { _ in .init(.catalog(includeTags: true), projection: "tags") },
+        .init("tags rename", "id", ["id": .string, "name": .string], required: "name", "Rename a native-matched tag and report affected reminder receipts.") { .init(.tag(.rename($0.id, name: $0.name))) },
+        .init("tags delete", "id", ["id": .string, "confirmed": .bool], required: "confirmed", "Remove a native-matched tag from reminders; confirmed must be true.") { .init(.tag(.delete($0.id, confirmed: true))) },
         .init("smart-lists", "", [:], "Read smart lists, preserving opaque unknown filters; lists with unknown filters are read-only.") { _ in .init(.catalog(includeTags: false), projection: "smart-lists") },
         .init("smart-lists add", "name", ["name": .string, "definition": Shapes.smart], required: "definition", "Create native smart list; unsupported filter/account capabilities refuse explicitly.") { a in
             let smart = try a.merged(SmartList(id: "", name: a.name), "definition")

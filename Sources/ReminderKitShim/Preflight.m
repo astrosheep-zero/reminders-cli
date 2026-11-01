@@ -34,9 +34,14 @@ BOOL RNPreflight(NSArray<NSString *> *features, NSError **error) {
         if (![[NSBundle bundleWithPath:@"/System/Library/PrivateFrameworks/ReminderKit.framework"] loadAndReturnError:&loadError])
             Unsupported(loadError.localizedDescription ?: @"ReminderKit unavailable");
         CheckSignatures(@"REMStore initUserInteractive: @ B; REMListSectionsDataView initWithStore: @ @; REMTemplatesDataView initWithStore: @ @; "
-            "+REMReminder objectIDWithUUID: @ @; +REMReminderFetchOptions fetchOptionsIncludingDueDateDeltaAlerts @; +REMReminderFetchOptions fetchOptionsIncludingConcealed @; "
+            "+REMReminder objectIDWithUUID: @ @; +REMReminderFetchOptions fetchOptionsIncludingDueDateDeltaAlerts @; +REMReminderFetchOptions fetchOptionsIncludingConcealed @; +REMReminderFetchOptions defaultFetchOptions @; "
+            "REMStore fetchRemindersWithObjectIDs:fetchOptions:error: @ @ @ ^@; "
             "REMSaveRequest initWithStore: @ @; REMSaveRequest saveSynchronouslyWithError: B ^@; REMSaveRequest trackedReminderChangeItems @; REMSaveRequestTrackedValueContainer valueWithoutPerformingCopy @");
         NSDictionary<NSString *, NSString *> *table = @{
+            @"reminder.find": @"REMSiriSearchDataView_RemindersByCriteriaInvocation initWithFetchResultTokenToDiffAgainst: @ @; REMStore resultFromPerformingSwiftInvocation:parametersData:storages:error: @ @ @ @ ^@; REMStoreSwiftInvocationResult resultData @; REMStore fetchRemindersWithObjectIDs:fetchOptions:error: @ @ @ ^@",
+            @"reminder.list": @"REMRemindersDataView initWithStore: @ @; REMRemindersDataView fetchRemindersWithListID:includingSubtasks:includingCompleted:error: @ @ B B ^@",
+            @"reminder.title": @"+REMReminderPredicateDescriptor predicateDescriptorForRemindersWithTitleEquals: @ @; REMStore fetchRemindersMatchingPredicateDescriptor:sortDescriptors:options:error: @ @ @ @ ^@",
+            @"tags.read": @"REMHashtagLabelDataView_AllHashtagLabelsInvocation initWithFetchResultTokenToDiffAgainst: @ @; REMHashtagLabelDataView_ReminderIDsIncludeExcludeOperationInvocation initWithFetchResultTokenToDiffAgainst: @ @; REMHashtagLabelDataView_HashtagIDsWithHashtagLabelNamesInvocation initWithFetchResultTokenToDiffAgainst: @ @; REMStore resultFromPerformingSwiftInvocation:parametersData:storages:error: @ @ @ @ ^@; REMStoreSwiftInvocationResult resultData @",
             @"reminder.create": @"REMSaveRequest addReminderWithTitle:toListChangeItem: @ @ @",
             @"reminder.update": @"REMSaveRequest updateReminder: @ @",
             @"reminder.delete": @"REMReminderChangeItem removeFromList v",
@@ -89,8 +94,8 @@ BOOL RNPreflight(NSArray<NSString *> *features, NSError **error) {
             NSString *key = @{@"parentID": @"listID", @"group.delete": @"list.delete"}[feature] ?: feature;
             NSString *signatures = table[key];
             if (!signatures) Unsupported([@"Unknown native capability token: " stringByAppendingString:feature]);
-            if ([key isEqual:@"smart.find"] && ![[NSBundle bundleWithPath:@"/System/Library/PrivateFrameworks/ReminderKitInternal.framework"] load])
-                Unsupported(@"Native smart-list evaluator unavailable");
+            if (([key isEqual:@"smart.find"] || [key isEqual:@"reminder.find"] || [key isEqual:@"tags.read"]) && ![[NSBundle bundleWithPath:@"/System/Library/PrivateFrameworks/ReminderKitInternal.framework"] load])
+                Unsupported(@"Native query evaluator unavailable");
             CheckSignatures(signatures);
         }
         return @YES;

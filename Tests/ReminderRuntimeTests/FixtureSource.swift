@@ -93,6 +93,22 @@ if mode == "descriptor" {
     try worker.finish(result: request)
 }
 if mode == "nonzeroAfter" { exit(17) }
+if mode == "inheritedPipes" {
+    // The child inherits both output pipes and ignores TERM, so only group KILL
+    // can close them. Record its PID for the test to check cleanup.
+    signal(SIGTERM, SIG_IGN)
+    var descendant: pid_t = 0
+    let arguments = ["/bin/sh", "-c", "exec /bin/sleep 60"].map { (value: String) in
+        value.withCString { strdup($0)! }
+    }
+    defer { arguments.forEach { free($0) } }
+    var argv = arguments.map(Optional.some) + [nil]
+    var environment: [UnsafeMutablePointer<CChar>?] = [nil]
+    // No spawn attributes: inherit the worker's process group and ignored TERM.
+    guard posix_spawn(&descendant, "/bin/sh", nil, nil, &argv, &environment) == 0 else { exit(25) }
+    try! Data(String(descendant).utf8).write(to: URL(fileURLWithPath: artifact))
+    exit(0)
+}
 if mode == "trailingAfter" || mode == "mutatingTrailing" { raw("{broken}\n") }
 if mode == "partialTrailing" { raw("unfinished") }
 if mode == "duplicateResult" || mode == "mutatingDuplicateResult" { raw("{\"type\":\"result\",\"payload\":\"eA==\"}\n") }

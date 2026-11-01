@@ -20,9 +20,9 @@ An explicit doctor may use an all-zero valid UUID lookup after observing full ac
 The original Native integration introduced these accepted Core refinements (retained by the facade/MCP revision):
 
 - `Command.catalog(includeTags: Bool)` and `ReminderBackend.catalog(includeTags: Bool)` explicitly select metadata-only or tag-inclusive projection.
-- Every Core name/reference-resolution path requests `false`; explicit catalog forwards its flag; a tag mutation requests `true`.
+- Container/member resolution requests `false`; explicit catalog forwards its flag. Tag mutation uses native label selection directly, not a catalog scan.
 - `false` intentionally omits `Catalog.tags`. It does not assert there are zero tags or fabricate zero counts. CLI list/group/section/smart-list/template projections use false, and tag/full catalog views use true.
-- `true` reads only raw `hashtags`/`isCompleted` rows for accurate tag counts. It never calls full reminder conversion, recurrence parsing, image reading or hashing. A missing tag API/read error propagates.
+- `true` enumerates native hashtag labels, selects their reminder IDs, batches the unique selected objects, and counts completion flags without full model conversion or image-byte reads. Native zero-selection labels remain visible with zero counts. Missing APIs, missing selected reminders or read errors propagate.
 - Restore rechecks normalized support before the mutation callback, allowing a target account that lacks Recently Deleted to fail `unsupported` before `mutationStarted`.
 
 `docs/core-api.md` documents the refined interface. The Native fake-bridge tests and Core projection test exercise it directly, not through compatibility shims. Restore receipts also distinguish the restored subtree from its already-active touched parent: only the actual validated top-level target-list parent is allowed as auxiliary evidence, its childIDs must include the root, and it is never compacted out of the deletion journal. Saved parent identity remains authoritative. Before any saved-entry validation or journal compaction, non-root/non-auxiliary receipt IDs must occur in the actual restored root's childIDs and point back to that root. An unrelated record's own pending journal entry never grants subtree membership. Missing actual/known child evidence and unrelated auxiliary IDs fail uncertain with all journal evidence retained.
@@ -32,20 +32,26 @@ The original Native integration introduced these accepted Core refinements (reta
 | Family | Concrete system implementation |
 | --- | --- |
 | Reminder lookup | `REMReminder.objectIDWithUUID:` and `REMStore.fetchRemindersWithObjectIDs:fetchOptions:error:` with due-date-delta alerts. No account scan to locate an ID. A non-UUID reference returns nil for Core's separate exact-title resolution. |
-| Ordinary find | Native list/reminder fetches, then explicit typed query predicates. Smart-list filters are **not** simulated by these predicates. |
-| Rich reminder read | Civil due/start, recurrence, early alerts, flags/priority/urgent/completed, tags, section/manual neighbor, URL/images, location/vehicle/contact triggers, assignment and children. Ordinary reads and post-save attachment confirmation include native image metadata without opening attachment files; only explicit image reads consume bytes. |
+| Ordinary find | Native criteria search owns matching, ordering, offset and limit. Explicit query completed=true/false supplies isCompleted=true/false and takes precedence over includeCompleted; otherwise includeCompleted=true omits this criterion, false/default adds isCompleted=false. Smart-list mode evaluates the native list separately and rejects completed criteria. |
+| Rich reminder read | Read-only creationDate/lastModifiedDate/completionDate from native NSDate values become optional Core Date values outside editable fields; facade output uses ISO-8601 UTC and version hashing excludes them. Civil due/start, recurrence, early alerts, flags/priority/urgent/completed, tags, section/manual neighbor, URL/images, location/vehicle/contact triggers, assignment and children. Ordinary reads and post-save attachment confirmation include native image metadata without opening attachment files; only explicit image reads consume bytes. |
 | Create/update/complete | Native save request/change items. Updates translate sparse `Change` values: absent never writes, clear is explicit, and set-to-same preserves user intent. Title-only updates do not rebuild alarms, recurrence, assignment, attachments or ordering. |
 | Soft deletion | Every supplied root/child enters **one request and synchronous save**. Core journals the exact IDs first. No purge. |
 | Deleted-by-ID/restore | Concealed ID fetch; children whose obsolete listID persists are moved in the recovery save. Saved parent evidence is supplied to native recovery; deleted-state root/child parent pointers may be absent, while contradictory pointers refuse before saving. If recovery leaves an expected root/child parent link missing, all missing links are repaired in one conditional follow-up save. An independently deleted subtask rejoins its validated active top-level parent in the target list. Every restored tree record and relationship is read back strictly; repair failure remains outcome-unknown with retained receipts. |
 | Lists/groups | Native create/update/remove, grouping, appearance, pin/grocery/sort and ordering contexts. List position is a **write-only ordering directive**: reads return nil, nil writes mean no ordering request, not 'erase manual ordering'. |
 | Sections | Native section creation/rename/removal, explicit ordering, membership storage with a nonnil list UUID for 'no section' (nil group UUID is a known native trap). |
-| Tags | Requested catalog counts use a lightweight raw scan; rename/removal uses one request. Receipts come from the request's actual selected changes, not an earlier Swift scan or a count-only comparison. |
+| Tags | Native label invocations enumerate names, select reminder IDs and resolve actual hashtag IDs. Rename/removal edits only those native-selected hashtag objects in one request. The saved receipt ID set must equal the selected reminder ID set; equal counts with different IDs fail unknown with evidence. |
 | Custom smart lists | Native CRUD/filterData and minimum version, with system evaluation through `REMRemindersListDataView_CustomSmartListInvocation`. Unknown fields remain opaque JSON bytes on read and refuse edits. Multi-list selections explicitly encode OR union. Missing root operation means the native default AND. |
-| Templates | Native template view/create/delete and list instantiation. Request-owned created reminder IDs are included with the list receipt when provided by the system. |
+| Templates | Native template view/create/delete and list instantiation. Template projection retains optional color/icon using the shared list/smart-list color decoder (custom hex and lightBlue normalization included). Request-owned created reminder IDs are included with the list receipt when provided by the system. |
 
-Ordinary by-ID reads fetch the requested object directly. Reading its manual neighbor can inspect its own list ordering and sibling IDs; this is not a whole-account lookup. Per-entry-point caches avoid repeated sibling fetches while converting a list and are discarded when the entry point returns. Full ordinary find can enumerate selected lists; explicitly requesting full tag counts enumerates raw tag state. Neither behavior is imposed by metadata catalog/reference resolution.
+Ordinary by-ID reads fetch the requested object directly. Reading its manual neighbor can inspect its own list ordering and sibling IDs; this is not a whole-account lookup. Per-entry-point caches cover by-ID reads, missing/present sections and an incremental per-list ordering cursor. Caches are discarded when the entry point returns. Criteria search passes pagination to native search; smart-list mode slices returned native IDs before conversion. Title resolution uses `predicateDescriptorForRemindersWithTitleEquals:` and the native predicate fetch, then batches full models. List enumeration uses `REMRemindersDataView.fetchRemindersWithListID:includingSubtasks:includingCompleted:error:` with both flags enabled, followed by one full-options batch per list. This exhaustive path remains separate from paginated search.
+
+Criteria queries use `REMSiriSearchDataView_RemindersByCriteriaInvocation` through `REMStore.resultFromPerformingSwiftInvocation:parametersData:storages:error:`. Text modes map to native exact/prefix/word; list criteria use `includeForSiri`. The returned ID page is hydrated with one `fetchRemindersWithObjectIDs:fetchOptions:error:` call including early alerts. Search result storages alone omitted images, a URL and an early alert in live comparison, so they are not used as full reminder models. Returned identities are checked and conversion preserves native order. Child IDs retain the default native subtask-context read; the separate batch-child API’s completion/concealment semantics have not been established.
+
+The Reminders app imports Spotlight search and uses its own search collector. This establishes a distinct UI path, not that the Siri criteria invocation exactly reproduces the app’s UI search. Native criterion results are authoritative even when they differ from a local predicate over exposed fields.
 
 ### Mutation receipts and uncertainty
+
+Search pages, smart-list pages and multi-ID post-save readback all share the same full-options batch hydration, preserving requested order and sharing section/ordering caches within the guarded read. A missing requested ID or failed conversion still fails confirmation; it is never silently omitted. Core’s separate relationship rechecks remain in place.
 
 `REMSaveRequest.trackedReminderChangeItems` is captured immediately before and after the synchronous save. Only UUIDs owned by that request are used for reminder receipts; unrelated concurrent list creations are never attributed via before/after list differences. Create, update, tag replacement and template/list creation use this receipt. A recurring completion additionally requires a newly introduced request-owned completed nonrecurring copy with matching title. IDs already tracked before save, including a touched existing parent/neighbor, cannot satisfy this proof; only IDs introduced to that request during save qualify. Missing copy evidence becomes `outcomeUnknown`, not a fabricated complete receipt. Tracking a change is conservative evidence of participation in this save, not an atomic cross-device causal proof.
 
@@ -56,6 +62,8 @@ A native validation refusal before save is definite. Once `saveSynchronouslyWith
 ### Preflight and exception containment
 
 `checkSupport` first validates/encodes values and image bytes, then calls a **closed capability-token** metadata checker in `Preflight.m`. Repeated capability branches are now a closed ABI-signature table; callers still cannot supply a selector. `RN_SEND` generates otherwise identical nil-receiver fences while retaining explicit object/scalar/void C function signatures for each send. The checker verifies method existence, argument count, return encoding and every argument encoding for the selected command/fields before Core emits `mutationStarted`. Forwarded setters are checked on their actual storage classes; `respondsToSelector:` by itself is not trusted. Arbitrary class/selector names are never accepted from CLI/Core.
+
+Smart-list value preflight retains `SmartFilters.data(smart)`: although impossible enum cases are removed, the encoder still rejects empty definitions, duplicate native families and unbounded date ranges before any store opens. Its entry calls pure Core `Validation.filters`, so invalid priorities and relative ranges fail `invalidInput`, not late `unsupported`. Removing this preflight would defer those remaining shape errors until after the mutation marker.
 
 Resolved restore targets additionally read `account.capabilities.supportsRecentlyDeletedList`; custom-smart creation reads `supportsCustomSmartLists`. These are authorized, nonprompting preflight reads, not saves. Missing/changed APIs and unsupported account capabilities fail explicitly. Metadata cannot prove dynamically forwarded object behavior, per-account data shape, or eventual native success; the entry-point exception fence remains necessary.
 
@@ -73,9 +81,9 @@ The prior signed build's explicit image byte read still failed with `NSCocoaErro
 
 ## Capability limitations (explicit, not empty success)
 
-- Core can represent arbitrary time windows; the evidenced native schema uses named time periods. Arbitrary time-filter edits are unsupported.
-- Coordinate-free generic/arriving/leaving location filters have no lossless evidenced schema. `noLocation` and vehicle filters are supported; coordinate-bearing reminder alarms are supported.
-- Date `any` uses `{"any":""}`. Civil ranges and one-direction hour/day/week/month relative ranges are supported. Overdue-only, bidirectional relative ranges and minute relative ranges are unsupported. Dynamic `today` and unknown native nested forms are preserved opaquely, not converted to a fixed date.
+- Arbitrary time windows and overdue-only filters are removed from Core and writable discovery; native named time periods and unmodeled date children remain opaque unknown filters on read.
+- LocationFilter exposes only `none`, `gettingInCar`, `gettingOutOfCar`, matching native `noLocation`/vehicle forms. Coordinate-free generic/arriving/leaving cases are removed; coordinate-bearing reminder alarms remain supported.
+- Date `any` uses `{"any":""}`. Civil ranges and one-direction hour/day/week/month relative ranges are supported. Nonnegative counts with exactly one positive direction are required; zero, bidirectional, negative and minute ranges fail Core `invalidInput`. Smart-filter priorities accept low/medium/high, not none; unmodeled native priority payloads remain unknown. Dynamic `today` and unknown native nested forms are preserved opaquely, not converted to a fixed date.
 - Native multiple recurrence rules, recurrence weeks-of-year/days-of-year/setPositions, multiple URL attachments and multiple location/vehicle triggers cannot be represented losslessly by current Core models; reading such a reminder fails unsupported. Unknown enum values also fail explicitly.
 - Non-default sort directions not modeled by Core fail unsupported on read, rather than being rewritten as another sort.
 - Reminder `clear(position)` is unsupported; the system has no evidenced 'unordered' state. List position instead has the write-only directive semantics documented above.
@@ -90,7 +98,7 @@ Independent implementation, **not copied reference bodies**. The unlicensed `app
 - `remctl` revision `3a105720a603787ffae9abfa29e45c0c9921494e`: `remctl-private.m`, `remctl_smart_lists.py`, `docs/notes/private-api-audit-2026-08-12.md`. Its SQLite/EventKit fallback architecture is **not** adopted.
 - Original metadata-inspection host: macOS **27.2**, build **26B123**, arm64; Apple Swift **6.4** (`swiftlang-6.4.0.34.1`), clang **2100.3.34.1**. Current facade/MCP verification uses installed Swift **6.4.2**; deployment remains macOS 26+ with a Swift 6.2 manifest floor.
 
-Class-only inspection loaded ReminderKit/ReminderKitInternal, enumerated method/property metadata, and allocated **no private store, request, reminder or change-item objects**. A separate closed preflight probe tested all 43 declared feature tokens and succeeded after mapping section rename to forwarded `REMListSectionStorage.setDisplayName:`. These are runtime **metadata** observations, not live-data tests. The temporary raw outputs are under ignored `.build/native-metadata.txt`, `.build/native-tag-metadata.txt`, `.build/preflight-probe.txt`; the production preflight table retains the checked return/argument contracts below.
+Class-only inspection loaded ReminderKit/ReminderKitInternal, enumerated method/property metadata, and allocated **no private store, request, reminder or change-item objects**. A separate earlier closed preflight probe tested its 43 declared feature tokens and succeeded after mapping section rename to forwarded `REMListSectionStorage.setDisplayName:`. These are runtime **metadata** observations, not live-data tests. The temporary raw outputs are under ignored `.build/native-metadata.txt`, `.build/native-tag-metadata.txt`, `.build/preflight-probe.txt`; the production preflight table retains the checked return/argument contracts below.
 
 Selected actual host encodings (object `@`, signed integer `q`, unsigned `Q`, BOOL `B`, double `d`, void `v`):
 
@@ -135,30 +143,32 @@ Physical lines, including comments and blanks (tests/docs/Core integration exclu
 | File | Lines |
 | --- | ---: |
 | Native Swift: ImageStaging | 92 |
-| Native Swift: NativeReminderBackend | 408 |
-| Native Swift: SmartFilters | 142 |
-| Native Swift: Translation | 211 |
-| **Native Swift subtotal** | **853** |
-| ObjC: Preflight.m | 98 |
-| ObjC: ReminderKitShim.m | 959 |
-| ObjC public header | 61 |
-| **Native production total** | **1,971** |
+| Native Swift: NativeReminderBackend | 417 |
+| Native Swift: SmartFilters | 129 |
+| Native Swift: Translation | 214 |
+| **Native Swift subtotal** | **852** |
+| ObjC: Preflight.m | 103 |
+| ObjC: ReminderKitShim.m | 1,071 |
+| ObjC public header | 67 |
+| **Native production total** | **2,093** |
 
-This is 157 lines below the 2,128-line starting Native worktree, including its pre-existing image/recovery repairs. The unused duplicate section-list bridge entry is removed; list-scoped CLI/MCP sections still use the typed catalog projection. Typed Core operations remain intact. No minification, source relocation into tests or compatibility shim is used.
+This is 35 lines below the historical 2,128-line Native starting worktree and 9 below the 2,102-line start of this contract repair, retaining pre-existing image/recovery repairs. Whole `Sources/` implementation files (Swift/ObjC/C) decrease from 4,897 to 4,895 physical lines; including the unchanged headers, 4,997 to 4,995. The unused duplicate section-list bridge entry is removed; list-scoped CLI/MCP sections still use the typed catalog projection. Typed Core operations remain intact. No minification, source relocation into tests or compatibility shim is used.
 
 ## Verification and non-evidence
 
-Current facade/MCP worktree (offline, not a new signed/live build):
+Earlier search/runtime/journal audit worktree (these counts and results predate the native criteria search change; see [coverage](coverage.md)):
 
 ```text
 swift build                                      PASS
-bash scripts/test.sh                             108 tests PASS
-  Runtime 13 / Native 36 / Core 33 / CLI+facade+MCP 26
+bash scripts/test.sh                             120 tests PASS
+  Runtime 15 / Native 40 / Core 37 / CLI+facade+MCP 28
 closed RNPreflight feature table + unknown token  PASS (metadata only, no store)
 creation-to-sparse-field translation              PASS
 ```
 
-The test wrapper loads the **installed real Swift Testing macro plugin** on this CLT release. It does not replace Testing/XCTest with a fake framework. Plain default `swift test` can fail macro discovery on this toolchain; the Holder amended contract verification to the wrapper. Linker warnings about missing optional CLT Developer framework search directories are environment warnings; builds/tests completed.
+Current contract/wiring verification on 2026-11-01: plain `swift test` passes **136 tests** (Runtime 15 / Native 47 / Core 44 / CLI+facade+MCP 30), and `git diff --check` is clean. Added/updated tests exercise default/parent-list creation, completion tri-state precedence, strict supported filters/opaque preservation, shared template colors and timestamp projection/version stability through the real current boundaries. No new compatibility helpers, live scripts, packaged app, setup, TCC or keychain operation were used. Linker warnings report missing optional CLT search directories; all tests still pass.
+
+The historical test wrapper loads the **installed real Swift Testing macro plugin** on this CLT release. It does not replace Testing/XCTest with a fake framework. Plain default `swift test` can fail macro discovery on this toolchain; the Holder amended contract verification to the wrapper. Linker warnings about missing optional CLT Developer framework search directories are environment warnings; builds/tests completed.
 
 Offline tests cover civil dates, recurrence/enum mapping, sparse patches and clearing, unsupported-vs-empty, unknown filter preservation and OR/default-AND semantics, image metadata receipts/permissions/lease ownership, exception fences, lazy construction, denial without store construction, exact request-owned receipts, metadata-only catalog, restored subtask parent and strict missing-child confirmation. ObjC bridge doubles implement the current boundary, never an old Core compatibility API.
 

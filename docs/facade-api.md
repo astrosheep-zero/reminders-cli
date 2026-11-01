@@ -50,11 +50,11 @@ Public enums are objects with `kind`. An unlabeled associated value is named **`
 {"kind":"gettingOutOfCar"}
 ```
 
-Dates are Gregorian civil components, not UTC instants. Place alerts optionally include `address`; `when` is `arriving` or `leaving`. Contact alerts are `{ "phones": [...], "emails": [...] }`, from explicit inputs, never Contacts lookup.
+Editable due/start dates are Gregorian civil components, not UTC instants. Place alerts optionally include `address`; `when` is `arriving` or `leaving`. Contact alerts are `{ "phones": [...], "emails": [...] }`, from explicit inputs, never Contacts lookup.
 
 Recurrence is `{frequency, interval, weekdays, monthDays, months, end?}`. Frequency is `hourly/daily/weekly/monthly/yearly`; weekdays contain `{day, ordinal?}` with Sunday=1 through Saturday=7. `end` uses count/until above. Early alerts contain `{before, unit}`; units are `minutes/hours/days/weeks/months`. Core validation still enforces date/range/recurrence/urgent/relationship restrictions.
 
-Smart filters use these stable shapes (unknown native filters are output-only):
+Smart filters use these stable shapes (date entries show alternatives; each family may occur only once in a definition, and unknown native filters are output-only):
 
 ```json
 [
@@ -69,15 +69,15 @@ Smart filters use these stable shapes (unknown native filters are output-only):
 ]
 ```
 
-Date filters also model `none`/`overdue`, and time filters model `{kind:"time",fromHour,fromMinute,toHour,toMinute}`. A schema describing a Core value is not a claim that every native shape/account supports it: arbitrary time windows, overdue-only filters, bidirectional/minute relative ranges and coordinate-free place filters remain explicitly unsupported. Location filter strings are `any/none/arriving/leaving/gettingInCar/gettingOutOfCar`. An output-only opaque filter is `{kind:"unknown",key,payload}` with base64 payload. Such filters are preserved on read, excluded from writable discovery schemas and refused on submission; smart lists containing them cannot be edited even by dropping the unknown filter.
+Date filters also model `none`. Relative ranges require nonnegative counts, exactly one of `past`/`future` positive, and units `hours/days/weeks/months`; priority filters accept only `low/medium/high`. Invalid counts or priority `none` fail Core `Validation.filters` with `invalidInput`; the schema also excludes minute units and `none` priority. Location filter strings are only `none/gettingInCar/gettingOutOfCar`. Arbitrary time windows, overdue-only and coordinate-free place variants are removed from the writable models/schema, not accepted only to fail later in Native. An output-only opaque filter is `{kind:"unknown",key,payload}` with base64 payload. Such filters are preserved on read, excluded from writable discovery schemas and refused on submission; smart lists containing them cannot be edited even by dropping the unknown filter.
 
 ## Operation arguments
 
 | Operation | Arguments |
 |---|---|
 | `find` | Optional `query` object, with optional top-level `text`, `list`, `limit` overrides |
-| `show` | `id` (ID or exact title) |
-| `add` | `title`, `list`, optional `fields`, `images` |
+| `show` | `id` (ID or native title-equals match) |
+| `add` | `title`; optional `list`, `fields`, `images`; omitted list inherits parent or uses the unique default |
 | `edit` | `id`, `version`, optional `set`, `clear`, `images`, `removeImageIDs`; at least one change |
 | `done` | `id`, `version`, optional `undo` (default false) |
 | `delete` | `id`, `version`; includes known children |
@@ -87,15 +87,15 @@ Date filters also model `none`/`overdue`, and time filters model `{kind:"time",f
 | Container add | `name`; sections/templates also require `list`; lists allow `fields`; smart lists require `definition`; templates allow `includeCompleted` |
 | List edit | `id`, full `fields` (`name`, `pinned`, `kind`, `sort` required) |
 | Smart-list edit | `id`, full `definition` (`id`, `name`, `match`, `filters` required) |
-| Group/tag rename | `id`, `name` (tag `id` is its exact tag name) |
+| Group/tag rename | `id`, `name` (tag `id` is a name resolved by native label matching) |
 | Section rename/move | `id`, `list`, plus `name` or tagged `position` respectively |
 | Container delete / clear-completed | `id`, `confirmed:true`; sections also require `list` |
 | Template use | `id`, optional `name` for the new list |
 | Other listings / `catalog` / `doctor` / `deleted` | Empty object |
 
-Reminder `fields`/`set` keys: `title`, `listID`, `notes`, `due`, `start`, `recurrence`, `earlyAlerts`, `location`, `contact`, `url`, `priority`, `flagged`, `urgent`, `completed`, `tags`, `parentID`, `sectionID`, `position`, `assigneeID`. Priority is `none/low/medium/high`; flags are booleans and tags are string arrays. Creation fields overlay Core defaults but cannot override positional/top-level title or list identity. Edit sets preserve false/empty string/empty array; `clear` is an array of field names, disjoint from `set`. Missing fields remain absent. List edits are full replacements, except omitted position is a write-only no-ordering directive, not an erase request.
+Reminder `fields`/`set` keys: `title`, `listID`, `notes`, `due`, `start`, `recurrence`, `earlyAlerts`, `location`, `contact`, `url`, `priority`, `flagged`, `urgent`, `completed`, `tags`, `parentID`, `sectionID`, `position`, `assigneeID`. Priority is `none/low/medium/high`; flags are booleans and tags are string arrays. Creation fields overlay Core defaults but cannot change the positional title or conflict with an explicitly supplied top-level `list`. If top-level `list` is omitted, `fields.listID` is allowed; an empty listID passes unchanged to Core for parent-list inheritance or unique-default selection. Edit sets preserve false/empty string/empty array; `clear` is an array of field names, disjoint from `set`. Missing fields remain absent. List edits are full replacements, except omitted position is a write-only no-ordering directive, not an erase request.
 
-Query keys: `text`, `list`, `smartList`, `section`, `includeCompleted`, `flagged`, `urgent`, `repeating`, `hasLocation`, `assigneeID`, `tags`, `dueOnOrAfter`, `dueBefore`, `limit`. Defaults exclude completed and limit to 100.
+Query keys: `text`, `matching` (`exact`, `prefix`, `word`), `list`, `smartList`, `includeCompleted`, `completed`, `flagged`, `urgent`, `repeating`, `hasLocation`, `hasDueDate`, `limit`, `offset`. Matching requires nonblank text and defaults to `word`. For ordinary queries, explicit `completed:true/false` overrides `includeCompleted` and selects only completed/incomplete reminders; with `completed` omitted, `includeCompleted:true` selects all and false/default selects incomplete. Smart-list mode rejects `completed` and other criteria, but allows `includeCompleted`, limit and offset. Default limit is 100, offset 0. Criteria are matched and paged by native search in native order. Smart-list paging slices native IDs in returned order; neither mode promises a stable snapshot across requests.
 
 List fields: `name`, `color`, `icon`, `groupID`, `pinned`, `kind` (`standard/groceries`), `sort` (`manual/due/creation/priority/title`), `position`. Smart definitions: `id`, `name`, optional `color`/`icon`, `match` (`all/any`), `filters`. Creation defaults are retained for omitted fields. Full replacements omit optional fields to clear them, not null.
 
@@ -119,7 +119,7 @@ Examples of `tools/call` arguments:
 {"status":"unknown","error":{"code":"outcomeUnknown","message":"Final answer unavailable","affectedIDs":["R"]},"warnings":["Inspect state before retrying."]}
 ```
 
-The first example abbreviates default fields; actual reminders include all required Core fields. Result kinds remain `reminders`, `mutation`, `catalog`, `lists/groups/sections/tags/smartLists/templates`, `deleted`, `image`, `diagnostics`, and CLI-only `help`. Mutations retain affected IDs, computed count, versioned reminders and lists. Deletion output has explicit `scope:"toolOnly"` and entries, not all-system Recently Deleted. Versions still hash Core's canonical visible state; changing the public enum spelling does not change the token algorithm. Internal mutation payloads no longer redundantly encode computed count; the facade computes it once for public output.
+The first example abbreviates default fields; actual reminders include all required Core fields. Reminder rows additionally expose optional read-only `creationDate`, `lastModifiedDate`, and `completionDate` as ISO-8601 UTC strings outside `fields`; missing values are omitted and these fields cannot be submitted in `set`/`fields`. They are excluded from version hashing, preserving existing tokens. Template entries retain optional read-only `color`/`icon`, normalized identically to list and smart-list appearance. Result kinds remain `reminders`, `mutation`, `catalog`, `lists/groups/sections/tags/smartLists/templates`, `deleted`, `image`, `diagnostics`, and CLI-only `help`. Mutations retain affected IDs, computed count, versioned reminders and lists. Deletion output has explicit `scope:"toolOnly"` and entries, not all-system Recently Deleted. Versions still hash Core's canonical visible mutable state; changing the public enum spelling does not change the token algorithm. Internal mutation payloads no longer redundantly encode computed count; the facade computes it once for public output.
 
 Swift task cancellation from the official SDK runs the facade's cancellation handler, including while queued. Active Runtime polling observes the token, stops/reaps the worker and drains pending pipe bytes so a just-written mutation marker cannot be lost. Pending canceled calls reach Runtime's pre-spawn check and cannot become delayed writes. EOF/signals cancel and drain active/queued calls before frontend exit. Per-worker deadlines are 30 seconds (explicit CLI setup: 120); queue wait does not extend the worker's own deadline.
 

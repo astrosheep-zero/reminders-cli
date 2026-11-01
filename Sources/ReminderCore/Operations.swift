@@ -1,5 +1,15 @@
 import Foundation
 
+/// Hash the complete journal record while retaining its existing equality semantics.
+private struct SavedDeletion: Hashable {
+    let entry: DeletionEntry
+    static func == (lhs: Self, rhs: Self) -> Bool { lhs.entry == rhs.entry }
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(entry.id); hasher.combine(entry.title); hasher.combine(entry.listID)
+        hasher.combine(entry.parentID); hasher.combine(entry.time); hasher.combine(entry.state.rawValue)
+    }
+}
+
 /// Serializes this engine instance; it is NOT a global or cross-device transaction.
 /// Callbacks/backends must not re-enter execute. No automatic retry is ever performed.
 public final class Operations: @unchecked Sendable {
@@ -48,13 +58,10 @@ public final class Operations: @unchecked Sendable {
         switch command {
         case .catalog(let includeTags): return .catalog(try backend.catalog(includeTags: includeTags))
         case .find(var query):
-            if query.list != nil || query.smartList != nil || query.section != nil {
+            if query.list != nil || query.smartList != nil {
                 let catalog = try backend.catalog(includeTags: false)
                 if let list = query.list { query.list = try resolveList(list, catalog).id }
                 if let smart = query.smartList { query.smartList = try resolve(smart, catalog.smartLists.map { ($0.id, $0.name) }) }
-                if let section = query.section {
-                    query.section = try resolve(section, catalog.sections.filter { query.list == nil || same($0.listID, query.list!) }.map { ($0.id, $0.name) })
-                }
             }
             return .reminders(try backend.find(query))
         case .show(let reference): return .reminders([try reminder(reference)])
@@ -112,12 +119,7 @@ public final class Operations: @unchecked Sendable {
         case .list(let action): return try list(action)
         case .group(let action): return try group(action)
         case .section(let action): return try section(action)
-        case .tag(let action):
-            let catalog = try backend.catalog(includeTags: true)
-            let name: String
-            switch action { case .rename(let old, _), .delete(let old, _): name = old }
-            guard catalog.tags.contains(where: { $0.name == name }) else { throw Failure(.notFound, "Tag not found") }
-            return try mutate { try backend.tag(action) }
+        case .tag(let action): return try mutate { try backend.tag(action) }
         case .smartList(let action): return try smartList(action)
         case .template(let action): return try template(action)
         }
@@ -140,8 +142,7 @@ public final class Operations: @unchecked Sendable {
         // Backend guarantees case-insensitive ID lookup. No whole-account scan is imposed for IDs.
         if let item = try backend.reminder(id: input) { return item }
         if UUID(uuidString: input) != nil { throw Failure(.notFound, "Reminder not found: \(input)") }
-        var query = ReminderQuery(); query.text = input; query.includeCompleted = true; query.limit = Int.max
-        let matches = try backend.find(query).filter { $0.fields.title == input }
+        let matches = try backend.reminders(matchingTitle: input)
         guard matches.count == 1 else { throw Failure(matches.isEmpty ? .notFound : .ambiguous, "No unique reminder named \(input)") }
         return matches[0]
     }
@@ -203,11 +204,12 @@ public final class Operations: @unchecked Sendable {
         guard Set(records.map { $0.id.lowercased() }).count == records.count else { throw Failure(.conflict, "Duplicate deletion IDs") }
         return records
     }
-    private func deleting(_ records: [Reminder], body: () throws -> MutationResult) throws -> OperationResult {
+    private func deleting(_ records: [Reminder], additionalReceiptIDs: [String]? = nil, body: () throws -> MutationResult) throws -> OperationResult {
         let now = Date()
+        let recordIDs = Set(records.map { $0.id.lowercased() })
         try io { try journal.transaction { entries in
+            entries.removeAll { recordIDs.contains($0.id.lowercased()) }
             for item in records {
-                entries.removeAll { same($0.id, item.id) }
                 entries.append(DeletionEntry(id: item.id, title: item.fields.title, listID: item.fields.listID,
                                             parentID: item.fields.parentID, time: now, state: .pending))
             }
@@ -215,8 +217,14 @@ public final class Operations: @unchecked Sendable {
         // The journal is intentionally retained even if this last optimistic check fails.
         for item in records { try recheck(item) }
         let result = try mutate(body)
+        if let additionalReceiptIDs, case .mutation(let receipt) = result {
+            let allowed = recordIDs.union(additionalReceiptIDs.map { $0.lowercased() })
+            guard receipt.affectedIDs.allSatisfy({ allowed.contains($0.lowercased()) }) else {
+                throw Failure(.conflict, "List deletion receipt includes reminders outside the journaled snapshot")
+            }
+        }
         try io { try journal.transaction { entries in
-            for index in entries.indices where records.contains(where: { same($0.id, entries[index].id) }) {
+            for index in entries.indices where recordIDs.contains(entries[index].id.lowercased()) {
                 // A newer process's deletion intent must not be overwritten by an older completion.
                 if entries[index].time == now { entries[index].state = .confirmed }
             }
@@ -224,13 +232,21 @@ public final class Operations: @unchecked Sendable {
         return result
     }
     private func deleted() throws -> OperationResult {
+        let snapshot = try io { try journal.read() }
+        var states: [String: [(DeletionEntry, RestorableState)]] = [:]
+        for entry in snapshot {
+            let state: RestorableState
+            do { state = try backend.restorableState(id: entry.id) }
+            catch let failure as Failure { throw failure }
+            catch { throw Failure(.backend, String(describing: error)) }
+            states[entry.id.lowercased(), default: []].append((entry, state))
+        }
         let entries = try io { try journal.transaction { entries in
             var reconciled: [DeletionEntry] = []
             for var entry in entries {
-                let state: RestorableState
-                do { state = try backend.restorableState(id: entry.id) }
-                catch let failure as Failure { throw failure }
-                catch { throw Failure(.backend, String(describing: error)) }
+                guard let state = states[entry.id.lowercased()]?.first(where: { $0.0 == entry })?.1 else {
+                    reconciled.append(entry); continue
+                }
                 switch state {
                 case .restorable: entry.state = .confirmed; reconciled.append(entry)
                 case .active:
@@ -264,6 +280,15 @@ public final class Operations: @unchecked Sendable {
         guard case .mutation(var mutation) = result else { return result }
         let ids = Array(Set([id] + expected + mutation.affectedIDs)).sorted()
         mutation.affectedIDs = ids; evidence = mutation
+        let idKeys = Set(ids.map { $0.lowercased() })
+        var firstSavedByID: [String: DeletionEntry] = [:]
+        var savedParents: Set<String> = []
+        for saved in entries {
+            let key = saved.id.lowercased()
+            if firstSavedByID[key] == nil { firstSavedByID[key] = saved }
+            if idKeys.contains(key), let parent = saved.parentID { savedParents.insert(parent.lowercased()) }
+        }
+        let savedEntries = Set(entries.map { SavedDeletion(entry: $0) })
         // A restored subtask can also change its already-active parent. That
         // parent is auxiliary evidence, not another restored/deleted child.
         let restoredRoot = try byID(id)
@@ -276,11 +301,17 @@ public final class Operations: @unchecked Sendable {
         // Journal membership is evidence of a past delete, not proof that an
         // arbitrary receipt ID belongs to this restored tree. Establish actual
         // subtree membership from the restored root before consulting entries.
-        let restoredTreeIDs = [id] + restoredRoot.childIDs
-        guard restoredRoot.childIDs.allSatisfy({ childID in ids.contains { same($0, childID) } }) else {
+        let childKeys = Set(restoredRoot.childIDs.map { $0.lowercased() })
+        let restoredTreeKeys = childKeys.union([id.lowercased()])
+        guard childKeys.isSubset(of: idKeys) else {
             throw Failure(.conflict, "Restore receipt omitted an actual child")
         }
         var restored: [Reminder] = []
+        var hasPartialReadback = false
+        // Publish partial evidence on failure without copying the growing array on every iteration.
+        defer {
+            if hasPartialReadback { mutation.reminders = restored; evidence = mutation }
+        }
         for affectedID in ids {
             // Do not compactMap: a missing child or a failed read invalidates confirmation.
             let item = try byID(affectedID)
@@ -291,30 +322,28 @@ public final class Operations: @unchecked Sendable {
                     throw Failure(.conflict, "Auxiliary restore parent is not the active top-level parent of the restored root")
                 }
                 restored.append(item)
-                mutation.reminders = restored; evidence = mutation
+                hasPartialReadback = true
                 continue
             }
-            guard same(affectedID, id) || (restoredRoot.childIDs.contains(where: { same($0, affectedID) }) && same(item.fields.parentID, id)) else {
+            guard same(affectedID, id) || (childKeys.contains(affectedID.lowercased()) && same(item.fields.parentID, id)) else {
                 throw Failure(.conflict, "Restore receipt contains an unrelated record")
             }
-            if let saved = entries.first(where: { same($0.id, affectedID) }) {
+            if let saved = firstSavedByID[affectedID.lowercased()] {
                 let matches = saved.parentID.map { parent in item.fields.parentID.map { same($0, parent) } == true } ?? (item.fields.parentID == nil)
                 guard matches else { throw Failure(.conflict, "Restored reminder has unexpected parent") }
             } else if !same(affectedID, id) {
                 guard item.fields.parentID.map({ same($0, id) }) == true else { throw Failure(.conflict, "Restored child lost parent") }
             }
-            let hasSavedChildren = entries.contains { saved in
-                saved.parentID.map { same($0, item.id) } == true && ids.contains { same($0, saved.id) }
-            }
+            let hasSavedChildren = savedParents.contains(item.id.lowercased())
             try validateParent(id: item.id, parentID: item.fields.parentID, listID: item.fields.listID,
                                hasChildren: !item.childIDs.isEmpty || hasSavedChildren)
             restored.append(item)
-            mutation.reminders = restored; evidence = mutation
+            hasPartialReadback = true
         }
         mutation.reminders = restored; evidence = mutation
         try io { try journal.transaction { current in
             current.removeAll { candidate in
-                restoredTreeIDs.contains(where: { same($0, candidate.id) }) && entries.contains(candidate)
+                restoredTreeKeys.contains(candidate.id.lowercased()) && savedEntries.contains(SavedDeletion(entry: candidate))
             }
         } }
         return .mutation(mutation)
@@ -339,17 +368,17 @@ public final class Operations: @unchecked Sendable {
             let action = ListAction.update(id, try fields(f, currentID: id)); return try mutate { try backend.list(action) }
         case .delete(let name, _), .clearCompleted(let name, _):
             let id = try resolveList(name, catalog).id
-            var query = ReminderQuery(); query.list = id; query.includeCompleted = true; query.limit = Int.max
-            let all = try backend.find(query)
+            let all = try backend.reminders(listID: id)
             let isDelete: Bool; if case .delete = input { isDelete = true } else { isDelete = false }
             var selected = all.filter { isDelete || $0.fields.completed }
+            var selectedIDs = Set(selected.map { $0.id.lowercased() })
             // Native parent deletion also deletes children, including incomplete children.
             for item in selected {
-                for child in try deletionTree(item).dropFirst() where !selected.contains(where: { same($0.id, child.id) }) {
-                    selected.append(child)
+                for child in try deletionTree(item).dropFirst() {
+                    if selectedIDs.insert(child.id.lowercased()).inserted { selected.append(child) }
                 }
             }
-            if isDelete { return try deleting(selected) { try backend.list(.delete(id, confirmed: true)) } }
+            if isDelete { return try deleting(selected, additionalReceiptIDs: [id]) { try backend.list(.delete(id, confirmed: true)) } }
             guard !selected.isEmpty else { return .mutation(MutationResult(affectedIDs: [])) }
             // Delete the exact journaled snapshot, not a second native selection that could grow.
             return try deleting(selected) { try backend.deleteReminders(ids: selected.map(\.id)) }
@@ -428,15 +457,9 @@ public final class Operations: @unchecked Sendable {
         func confirmed(_ yes: Bool) throws { guard yes else { throw Failure(.invalidInput, "Explicit confirmation required") } }
         switch command {
         case .find(let query):
-            guard query.limit > 0 else { throw Failure(.invalidInput, "Limit must be positive") }
-            try Validation.tags(query.tags)
-            if let date = query.dueOnOrAfter { try Validation.date(date) }; if let date = query.dueBefore { try Validation.date(date) }
-            if let from = query.dueOnOrAfter, let before = query.dueBefore,
-               !Validation.components(from).lexicographicallyPrecedes(Validation.components(before)) {
-                throw Failure(.invalidInput, "Empty due-date range")
-            }
+            try Validation.query(query)
         case .create(let draft):
-            var f = draft.fields; if f.listID.isEmpty { f.listID = "default" }; try Validation.fields(f, images: draft.images)
+            try Validation.fields(draft.fields, images: draft.images, listRequired: false)
         case .update(_, let version, _), .complete(_, let version, _), .delete(_, let version):
             guard !version.isEmpty else { throw Failure(.invalidInput, "Version is required") }
         case .list(let action):

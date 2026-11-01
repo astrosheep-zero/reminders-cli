@@ -102,6 +102,16 @@ static void Put(NSMutableDictionary *dictionary, NSString *key, id value) {
 }
 static id Nullable(id value) { return value == NSNull.null ? nil : value; }
 static BOOL SameID(NSString *a, NSString *b) { return a && b && [a caseInsensitiveCompare:b] == NSOrderedSame; }
+static NSArray *UUIDs(id rows, NSString *key) {
+    if (![rows isKindOfClass:NSArray.class]) Refuse(RNErrorBackend, @"Native query returned invalid ID rows");
+    NSMutableOrderedSet *ids = [NSMutableOrderedSet orderedSet];
+    for (id row in rows) {
+        NSString *uuid = [row isKindOfClass:NSDictionary.class] ? row[key] : nil;
+        if (![uuid isKindOfClass:NSString.class] || ![[NSUUID alloc] initWithUUIDString:uuid]) Refuse(RNErrorBackend, @"Malformed native query ID");
+        [ids addObject:uuid.uppercaseString];
+    }
+    return ids.array;
+}
 static id Color(NSDictionary *spec) {
     if (!spec) return nil;
     if (!spec[@"name"]) return Required(O1(C(@"REMColor"), "colorWithHexString:", spec[@"hex"]), @"Color");
@@ -126,6 +136,9 @@ static NSDictionary *ColorValue(id value) {
     BOOL _saveAttempted;
     NSMutableDictionary *_activeCache;
     NSMutableDictionary *_concealedCache;
+    NSMutableDictionary *_sectionCache;
+    NSMutableDictionary *_positionsCache;
+    NSMutableSet *_sectionlessLists;
     NSArray *_listsCache;
     NSArray<NSString *> *_lastSavedReminderIDs;
     NSArray<NSString *> *_lastIntroducedReminderIDs;
@@ -148,6 +161,9 @@ static NSDictionary *ColorValue(id value) {
     _lastIntroducedReminderIDs = @[];
     _activeCache = [NSMutableDictionary dictionary];
     _concealedCache = [NSMutableDictionary dictionary];
+    _sectionCache = [NSMutableDictionary dictionary];
+    _positionsCache = [NSMutableDictionary dictionary];
+    _sectionlessLists = [NSMutableSet set];
     _listsCache = nil;
     id result = RNGuard(^id {
         @try { return body(); }
@@ -158,7 +174,8 @@ static NSDictionary *ColorValue(id value) {
             @throw;
         }
     }, error);
-    _activeCache = nil; _concealedCache = nil; _listsCache = nil;
+    _activeCache = nil; _concealedCache = nil; _sectionCache = nil; _positionsCache = nil;
+    _sectionlessLists = nil; _listsCache = nil;
     return result;
 }
 // Shared guarded save edges. Lookups and change construction stay inside the fence;
@@ -232,21 +249,28 @@ static NSDictionary *ColorValue(id value) {
     if (!uuid) Refuse(RNErrorInvalidInput, @"Invalid reminder UUID");
     return Required(O1(C(@"REMReminder"), "objectIDWithUUID:", uuid), @"Reminder object ID");
 }
-- (id)rawReminder:(NSString *)identifier concealed:(BOOL)concealed {
+- (void)cacheReminders:(NSArray<NSString *> *)identifiers concealed:(BOOL)concealed {
     NSMutableDictionary *cache = concealed ? _concealedCache : _activeCache;
-    id cached = cache[identifier.uppercaseString];
-    if (cached) return cached == NSNull.null ? nil : cached;
+    NSMutableArray *objectIDs = [NSMutableArray array], *missing = [NSMutableArray array];
+    for (NSString *identifier in identifiers) if (!cache[identifier.uppercaseString]) {
+        [missing addObject:identifier.uppercaseString];
+        [objectIDs addObject:[self reminderObjectID:identifier]];
+    }
+    if (!missing.count) return;
     id options = O(C(@"REMReminderFetchOptions"), concealed ? "fetchOptionsIncludingConcealed" : "fetchOptionsIncludingDueDateDeltaAlerts");
     NSError *error = nil;
     NSDictionary *values = ((id (*)(id, SEL, id, id, NSError **))objc_msgSend)(_store,
-        Selector("fetchRemindersWithObjectIDs:fetchOptions:error:"), @[[self reminderObjectID:identifier]], Required(options, @"Fetch options"), &error);
-    NativeResult(values, error, @"Fetch reminder by ID");
-    for (id value in values.allValues) if (SameID(ObjectID(value), identifier)) {
-        cache[identifier.uppercaseString] = value;
-        return value;
+        Selector("fetchRemindersWithObjectIDs:fetchOptions:error:"), objectIDs, Required(options, @"Fetch options"), &error);
+    NativeResult(values, error, @"Fetch reminders by ID");
+    for (NSUInteger index = 0; index < missing.count; index++) {
+        id value = values[objectIDs[index]];
+        if (value && !SameID(ObjectID(value), missing[index])) Refuse(RNErrorBackend, @"Reminder identity mismatch");
+        cache[missing[index]] = value ?: NSNull.null;
     }
-    cache[identifier.uppercaseString] = NSNull.null;
-    return nil; // Successful fetch with no object is distinct from an error.
+}
+- (id)rawReminder:(NSString *)identifier concealed:(BOOL)concealed {
+    [self cacheReminders:@[identifier] concealed:concealed];
+    return Nullable((concealed ? _concealedCache : _activeCache)[identifier.uppercaseString]);
 }
 - (BOOL)isConcealed:(id)object {
     if (!O(object, "listID")) return YES;
@@ -262,7 +286,11 @@ static NSDictionary *ColorValue(id value) {
     return object;
 }
 - (NSArray *)rawReminders:(id)list {
-    return Fetch1(_store, "fetchRemindersForEventKitBridgingWithListIDs:error:", @[Required(O(list, "objectID"), @"List ID")]);
+    id view = Required(O1([C(@"REMRemindersDataView") alloc], "initWithStore:", _store), @"Reminders view");
+    NSError *error = nil;
+    id values = ((id (*)(id, SEL, id, BOOL, BOOL, NSError **))objc_msgSend)(view,
+        Selector("fetchRemindersWithListID:includingSubtasks:includingCompleted:error:"), O(list, "objectID"), YES, YES, &error);
+    return NativeResult(values, error, @"Fetch list including completed reminders and subtasks");
 }
 - (NSArray *)rawSections:(id)list { return Fetch1(_store, "fetchListSectionsWithListObjectID:error:", O(list, "objectID")); }
 - (id)section:(NSString *)identifier list:(id)list { return [self find:identifier in:[self rawSections:list]]; }
@@ -323,23 +351,54 @@ static NSDictionary *ColorValue(id value) {
         return result;
     } error:error];
 }
+- (id)invoke:(NSString *)className parameters:(NSDictionary *)parameters storages:(NSDictionary *)storages {
+    if (![[NSBundle bundleWithPath:@"/System/Library/PrivateFrameworks/ReminderKitInternal.framework"] load])
+        Refuse(RNErrorUnsupported, @"Native query evaluator unavailable");
+    NSError *failure = nil;
+    NSData *data = [NSPropertyListSerialization dataWithPropertyList:parameters format:NSPropertyListBinaryFormat_v1_0 options:0 error:&failure];
+    NativeResult(data, failure, @"Encode native query");
+    id invocation = Required(O1([C(className) alloc], "initWithFetchResultTokenToDiffAgainst:", nil), @"Native invocation");
+    id reply = ((id (*)(id, SEL, id, id, id, NSError **))objc_msgSend)(_store,
+        Selector("resultFromPerformingSwiftInvocation:parametersData:storages:error:"), invocation, data, storages, &failure);
+    NativeResult(reply, failure, @"Native query");
+    id result = [NSPropertyListSerialization propertyListWithData:Required(O(reply, "resultData"), @"Query result") options:0 format:nil error:&failure];
+    return NativeResult(result, failure, @"Decode native query");
+}
+- (NSArray *)reminderIDsForTag:(NSString *)name {
+    id rows = [self invoke:@"REMHashtagLabelDataView_ReminderIDsIncludeExcludeOperationInvocation"
+        parameters:@{@"include": @[name], @"exclude": @[], @"operation": @{@"all": @{}}} storages:@{}];
+    return UUIDs(rows, @"uuid");
+}
+- (NSSet *)hashtagIDsForNames:(NSArray<NSString *> *)names {
+    id rows = [self invoke:@"REMHashtagLabelDataView_HashtagIDsWithHashtagLabelNamesInvocation"
+        parameters:@{@"hashtagLabelNamesToSearch": names} storages:@{}];
+    return [NSSet setWithArray:UUIDs(rows, @"uuid")];
+}
+- (BOOL)validateTag:(NSString *)name error:(NSError **)error {
+    return [self guard:^id {
+        if (![self hashtagIDsForNames:@[name]].count) Refuse(RNErrorNotFound, @"Native tag not found");
+        return @YES;
+    } error:error] != nil;
+}
 - (NSArray *)tagCountsWithError:(NSError **)error {
     return [self guard:^id {
-        // A requested tag catalog may scan raw rows. It never hydrates dates,
-        // recurrence, attachments, locations, or full reminder value models.
-        NSMutableDictionary *counts = [NSMutableDictionary dictionary];
-        for (id list in [self rawLists]) for (id reminder in [self rawReminders:list]) {
-            NSMutableSet *names = [NSMutableSet set];
-            for (id tag in O(reminder, "hashtags") ?: @[]) [names addObject:Required(O(tag, "name"), @"Tag name")];
-            BOOL completed = B(reminder, "isCompleted");
-            for (NSString *name in names) {
-                NSArray *previous = counts[name] ?: @[@0, @0];
-                counts[name] = @[@([previous[0] integerValue] + (completed ? 0 : 1)), @([previous[1] integerValue] + 1)];
-            }
+        id labels = [self invoke:@"REMHashtagLabelDataView_AllHashtagLabelsInvocation" parameters:@{} storages:@{}];
+        if (![labels isKindOfClass:NSArray.class]) Refuse(RNErrorBackend, @"Invalid native tag catalog");
+        NSMutableDictionary *selection = [NSMutableDictionary dictionary];
+        NSMutableSet *allIDs = [NSMutableSet set];
+        for (id label in labels) {
+            NSString *name = [label isKindOfClass:NSDictionary.class] ? label[@"name"] : nil;
+            if (![name isKindOfClass:NSString.class]) Refuse(RNErrorBackend, @"Malformed native tag label");
+            NSArray *ids = [self reminderIDsForTag:name];
+            selection[name] = ids; [allIDs addObjectsFromArray:ids];
         }
+        [self cacheReminders:allIDs.allObjects concealed:NO];
         NSMutableArray *values = [NSMutableArray array];
-        for (NSString *name in [counts.allKeys sortedArrayUsingSelector:@selector(compare:)]) [values addObject:@{
-            @"name": name, @"openCount": counts[name][0], @"totalCount": counts[name][1]}];
+        for (NSString *name in [selection.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+            NSUInteger open = 0;
+            for (NSString *identifier in selection[name]) if (!B([self existingReminder:identifier], "isCompleted")) open++;
+            [values addObject:@{@"name": name, @"openCount": @(open), @"totalCount": @([selection[name] count])}];
+        }
         return values;
     } error:error];
 }
@@ -384,40 +443,61 @@ static NSDictionary *PlaceValue(id trigger) {
     return value;
 }
 - (NSString *)sectionIDForReminder:(id)reminder {
+    NSString *identifier = ObjectID(reminder);
+    id cached = _sectionCache[identifier];
+    if (cached) return Nullable(cached);
+    if ([_sectionlessLists containsObject:ID(O(reminder, "listID"))]) return nil;
     NSError *error = nil;
     id section = ((id (*)(id, SEL, id, NSError **))objc_msgSend)(_sectionView, Selector("fetchListSectionWithReminderID:error:"), O(reminder, "objectID"), &error);
     if (error) {
         // ReminderKit reports an ordinary unsectioned reminder as this error.
-        if (!section && [error.domain isEqualToString:@"com.apple.reminderkit"] && error.code == -3009) return nil;
+        if (!section && [error.domain isEqualToString:@"com.apple.reminderkit"] && error.code == -3009) {
+            _sectionCache[identifier] = NSNull.null; return nil;
+        }
         Refuse(RNErrorBackend, error.localizedDescription);
     }
-    return section ? ObjectID(section) : nil;
+    _sectionCache[identifier] = section ? ObjectID(section) : NSNull.null;
+    return Nullable(_sectionCache[identifier]);
 }
-- (NSDictionary *)positionForReminder:(id)reminder sectionID:(NSString *)sectionID {
-    id list = [self list:ID(O(reminder, "listID"))];
-    id order = Required(O(list, "reminderIDsOrdering"), @"Native reminder manual order");
-    NSArray *identifiers = [order isKindOfClass:NSOrderedSet.class] ? [order array] : order;
-    if (![identifiers isKindOfClass:NSArray.class]) Refuse(RNErrorBackend, @"Invalid reminder manual ordering representation");
-    NSString *current = ObjectID(reminder), *parent = ID(O(reminder, "parentReminderID"));
-    NSMutableArray *siblings = [NSMutableArray array];
-    for (id objectID in identifiers) {
-        NSString *identifier = ID(objectID);
+- (NSDictionary *)positionForReminder:(id)reminder {
+    NSString *listID = ID(O(reminder, "listID")), *current = ObjectID(reminder);
+    NSMutableDictionary *state = _positionsCache[listID];
+    if (!state) {
+        id order = Required(O([self list:listID], "reminderIDsOrdering"), @"Native reminder manual order");
+        NSArray *objects = [order isKindOfClass:NSOrderedSet.class] ? [order array] : order;
+        if (![objects isKindOfClass:NSArray.class]) Refuse(RNErrorBackend, @"Invalid reminder manual ordering representation");
+        NSMutableArray *identifiers = [NSMutableArray array];
+        NSMutableDictionary *indexes = [NSMutableDictionary dictionary];
+        for (id objectID in objects) {
+            NSString *identifier = Required(ID(objectID), @"Ordered reminder ID");
+            if (!indexes[identifier]) { indexes[identifier] = @(identifiers.count); [identifiers addObject:identifier]; }
+        }
+        state = [@{@"ids": identifiers, @"indexes": indexes, @"cursor": @0,
+                   @"last": [NSMutableDictionary dictionary], @"positions": [NSMutableDictionary dictionary]} mutableCopy];
+        _positionsCache[listID] = state;
+    }
+    NSNumber *target = state[@"indexes"][current];
+    if (!target) return nil; // No manual-order record: do not manufacture a neighbor.
+    NSArray *identifiers = state[@"ids"];
+    NSMutableDictionary *last = state[@"last"], *positions = state[@"positions"];
+    NSUInteger cursor = [state[@"cursor"] unsignedIntegerValue];
+    // Scan each ordering entry at most once per read. A first sibling needs
+    // lookahead only until its next sibling (or the end), not the whole list.
+    while (cursor < identifiers.count && (cursor <= target.unsignedIntegerValue || !positions[current])) {
+        NSString *identifier = identifiers[cursor++];
+        state[@"cursor"] = @(cursor);
         id candidate = SameID(identifier, current) ? reminder : [self rawReminder:identifier concealed:NO];
         if (!candidate || [self isConcealed:candidate]) continue;
-        NSString *candidateParent = ID(O(candidate, "parentReminderID"));
-        NSString *candidateSection = [self sectionIDForReminder:candidate];
-        if (((parent == nil && candidateParent == nil) || SameID(parent, candidateParent)) &&
-            ((sectionID == nil && candidateSection == nil) || SameID(sectionID, candidateSection))) [siblings addObject:identifier];
+        NSArray *key = @[(ID(O(candidate, "parentReminderID")) ?: @"").uppercaseString,
+                         ([self sectionIDForReminder:candidate] ?: @"").uppercaseString];
+        NSString *previous = last[key];
+        if (previous) {
+            positions[identifier] = @{@"id": previous, @"after": @YES};
+            if (!positions[previous]) positions[previous] = @{@"id": identifier, @"after": @NO};
+        }
+        last[key] = identifier;
     }
-    NSUInteger index = [siblings indexOfObjectPassingTest:^BOOL(NSString *value, NSUInteger index, BOOL *stop) { return SameID(value, current); }];
-    if (index == NSNotFound) {
-        // New/automatically sorted items can legitimately have no manual-order
-        // record. Do not manufacture a neighbor from a different ordering mode.
-        return nil;
-    }
-    if (index > 0) return @{@"id": siblings[index - 1], @"after": @YES};
-    if (siblings.count > 1) return @{@"id": siblings[1], @"after": @NO};
-    return nil;
+    return positions[current];
 }
 - (NSDictionary *)reminderValue:(id)reminder concealed:(BOOL)concealed imageBytes:(BOOL)imageBytes {
     NSMutableDictionary *result = [@{@"id": ObjectID(reminder), @"title": Required(O(reminder, "titleAsString"), @"Reminder title"),
@@ -493,7 +573,7 @@ static NSDictionary *PlaceValue(id trigger) {
     // nil with no error means no section, not a failed fetch.
     NSString *sectionID = [self sectionIDForReminder:reminder];
     Put(result, @"sectionID", sectionID);
-    Put(result, @"position", [self positionForReminder:reminder sectionID:sectionID]);
+    Put(result, @"position", [self positionForReminder:reminder]);
     return result;
 }
 - (id)reminder:(NSString *)identifier concealed:(BOOL)concealed imageBytes:(BOOL)imageBytes error:(NSError **)error {
@@ -506,15 +586,53 @@ static NSDictionary *PlaceValue(id trigger) {
         return [self reminderValue:object concealed:concealed imageBytes:imageBytes];
     } error:error];
 }
-- (NSArray *)remindersInList:(NSString *)listID error:(NSError **)error {
+- (NSArray *)valuesForReminderIDs:(NSArray<NSString *> *)identifiers {
+    [self cacheReminders:identifiers concealed:NO];
+    NSMutableArray *objects = [NSMutableArray array], *values = [NSMutableArray array];
+    NSMutableSet *listIDs = [NSMutableSet set];
+    for (NSString *identifier in identifiers) {
+        id reminder = [self existingReminder:identifier];
+        [objects addObject:reminder];
+        [listIDs addObject:Required(ID(O(reminder, "listID")), @"Reminder list")];
+    }
+    for (NSString *listID in listIDs) if (![self rawSections:[self list:listID]].count) [_sectionlessLists addObject:listID];
+    for (id reminder in objects) [values addObject:[self reminderValue:reminder concealed:NO imageBytes:NO]];
+    return values;
+}
+- (NSArray *)remindersInList:(NSString *)listID identifiers:(NSArray<NSString *> *)identifiers error:(NSError **)error {
     return [self guard:^id {
+        if (identifiers) return [self valuesForReminderIDs:identifiers];
         NSMutableArray *values = [NSMutableArray array];
-        for (id reminder in [self rawReminders:[self list:listID]]) {
-            // Bridge list fetches omit early alerts. Fetch each ID with full options,
-            // otherwise visible version tokens would omit an editable field.
-            [values addObject:[self reminderValue:[self existingReminder:ObjectID(reminder)] concealed:NO imageBytes:NO]];
+        for (id list in listID ? @[[self list:listID]] : [self rawLists]) {
+            if (B(list, "isGroup")) continue;
+            NSMutableArray *ids = [NSMutableArray array];
+            for (id reminder in [self rawReminders:list]) [ids addObject:Required(ObjectID(reminder), @"Reminder ID")];
+            [values addObjectsFromArray:[self valuesForReminderIDs:ids]];
         }
         return values;
+    } error:error];
+}
+- (NSArray *)remindersMatchingTitle:(NSString *)title error:(NSError **)error {
+    return [self guard:^id {
+        id predicate = Required(O1(C(@"REMReminderPredicateDescriptor"), "predicateDescriptorForRemindersWithTitleEquals:", title), @"Title predicate");
+        NSError *failure = nil;
+        id rows = ((id (*)(id, SEL, id, id, id, NSError **))objc_msgSend)(self->_store,
+            Selector("fetchRemindersMatchingPredicateDescriptor:sortDescriptors:options:error:"), predicate, @[],
+            O(C(@"REMReminderFetchOptions"), "defaultFetchOptions"), &failure);
+        NativeResult(rows, failure, @"Fetch reminders matching title");
+        NSMutableArray *ids = [NSMutableArray array];
+        for (id reminder in rows) [ids addObject:Required(ObjectID(reminder), @"Title match ID")];
+        return [self valuesForReminderIDs:ids];
+    } error:error];
+}
+// Native search owns the ordered page. Hydrate that page in one batch: search
+// storages can omit attachments and early alerts even with fetch options enabled.
+- (NSArray *)searchRemindersWithCriteria:(NSArray<NSDictionary *> *)criteria limit:(NSInteger)limit offset:(NSInteger)offset error:(NSError **)error {
+    return [self guard:^id {
+        NSDictionary *parameters = @{@"criteria": criteria, @"fetchLimit": @(limit), @"fetchOffset": @(offset),
+            @"reminderFetchOptions": @{@"includeConcealed": @NO, @"includeDueDateDeltaAlerts": @YES}};
+        id rows = [self invoke:@"REMSiriSearchDataView_RemindersByCriteriaInvocation" parameters:parameters storages:@{}];
+        return [self valuesForReminderIDs:UUIDs(rows, @"objectIDUUID")];
     } error:error];
 }
 - (NSArray *)smartListsWithError:(NSError **)error {
@@ -534,25 +652,14 @@ static NSDictionary *PlaceValue(id trigger) {
 }
 - (NSArray *)contentsOfSmartList:(NSString *)identifier includeCompleted:(BOOL)completed error:(NSError **)error {
     return [self guard:^id {
-        NSError *loadError = nil;
-        if (![[NSBundle bundleWithPath:@"/System/Library/PrivateFrameworks/ReminderKitInternal.framework"] loadAndReturnError:&loadError])
-            Refuse(RNErrorUnsupported, loadError.localizedDescription ?: @"Native smart-list evaluator unavailable");
         id smart = [self find:identifier in:[self rawSmartLists]];
         NSDictionary *parameters = @{@"smartList": @{@"objectIDUUID": ObjectID(smart)}, @"sortingStyle": @{@"base": @"default"},
             @"showCompleted": @{@"base": completed ? @"on" : @"off"}, @"countCompleted": @NO,
             @"remindersPrefetch": @{@"base": @"none"}, @"fetchSubtasks": @"off", @"shouldFetchManualOrderingID": @NO};
-        NSError *error = nil;
-        NSData *data = [NSPropertyListSerialization dataWithPropertyList:parameters format:NSPropertyListBinaryFormat_v1_0 options:0 error:&error];
-        NativeResult(data, error, @"Encode native smart-list request");
         id account = Required(O(smart, "account"), @"Smart-list account");
         NSDictionary *storages = @{O(smart, "objectID"): Required(O(smart, "storage"), @"Smart-list storage"),
             O(account, "objectID"): Required(O(account, "storage"), @"Account storage")};
-        id invocation = Required(O1([C(@"REMRemindersListDataView_CustomSmartListInvocation") alloc], "initWithFetchResultTokenToDiffAgainst:", nil), @"Smart-list invocation");
-        id reply = ((id (*)(id, SEL, id, id, id, NSError **))objc_msgSend)(self->_store,
-            Selector("resultFromPerformingSwiftInvocation:parametersData:storages:error:"), invocation, data, storages, &error);
-        NativeResult(reply, error, @"Evaluate native smart list");
-        NSDictionary *decoded = [NSPropertyListSerialization propertyListWithData:Required(O(reply, "resultData"), @"Smart-list result") options:0 format:nil error:&error];
-        NativeResult(decoded, error, @"Decode smart-list result");
+        NSDictionary *decoded = [self invoke:@"REMRemindersListDataView_CustomSmartListInvocation" parameters:parameters storages:storages];
         NSArray *rows = [decoded[@"model"] isKindOfClass:NSDictionary.class] ? decoded[@"model"][@"reminders"] : nil;
         if (![rows isKindOfClass:NSArray.class]) Refuse(RNErrorBackend, @"Native smart-list response has no reminder rows");
         NSMutableArray *ids = [NSMutableArray array];
@@ -937,23 +1044,28 @@ static NSDictionary *PlaceValue(id trigger) {
         return @YES;
     } error:error] != nil;
 }
-- (NSNumber *)replaceTag:(NSString *)name replacement:(NSString *)replacement error:(NSError **)error {
+- (NSArray<NSString *> *)replaceTag:(NSString *)name replacement:(NSString *)replacement error:(NSError **)error {
     return [self guard:^id {
-        id request = [self request]; NSInteger count = 0;
-        for (id list in [self rawLists]) for (id reminder in [self rawReminders:list]) {
+        NSArray *ids = [self reminderIDsForTag:name];
+        NSSet *matchingIDs = [self hashtagIDsForNames:@[name]];
+        if (!matchingIDs.count) Refuse(RNErrorNotFound, @"Native tag not found");
+        NSSet *replacementIDs = replacement ? [self hashtagIDsForNames:@[replacement]] : [NSSet set];
+        [self cacheReminders:ids concealed:NO];
+        id request = [self request];
+        for (NSString *identifier in ids) {
+            id reminder = [self existingReminder:identifier];
             NSMutableArray *matches = [NSMutableArray array]; BOOL already = NO;
             for (id tag in O(reminder, "hashtags") ?: @[]) {
-                NSString *value = Required(O(tag, "name"), @"Tag name");
-                if ([value caseInsensitiveCompare:name] == NSOrderedSame) [matches addObject:tag];
-                else if (replacement && [value caseInsensitiveCompare:replacement] == NSOrderedSame) already = YES;
+                NSString *identifier = Required(ObjectID(tag), @"Hashtag ID");
+                if ([matchingIDs containsObject:identifier]) [matches addObject:tag];
+                else if ([replacementIDs containsObject:identifier]) already = YES;
             }
-            if (!matches.count) continue;
+            if (!matches.count) Refuse(RNErrorBackend, @"Native tag selection has no matching editable hashtag");
             id context = O(O1(request, "updateReminder:", reminder), "hashtagContext");
             for (id tag in matches) V1(context, "removeHashtag:", tag);
             if (replacement && !already) Required(((id (*)(id, SEL, NSInteger, id))objc_msgSend)(context, Selector("addHashtagWithType:name:"), 0, replacement), @"Replace tag");
-            count++;
         }
-        if (count) [self commit:request]; return @(count);
+        if (ids.count) [self commit:request]; return ids;
     } error:error];
 }
 @end

@@ -57,6 +57,17 @@ struct FacadeTests {
             #expect(!definition.summary.isEmpty)
         }
     }
+    @Test func creationAllowsDefaultParentOrFieldsListAndRejectsConflictingIdentity() throws {
+        let samples = [#"{"title":"T"}"#, #"{"title":"T","fields":{"parentID":"P"}}"#, #"{"title":"T","fields":{"listID":"L"}}"#]
+        for (json, fields) in zip(samples, [ReminderFields(title: "T", listID: ""), ReminderFields(title: "T", listID: "", parentID: "P"), ReminderFields(title: "T", listID: "L")]) {
+            #expect(try FacadeOperations.prepare("add", arguments: arguments(json)).request == .operation(.create(ReminderDraft(fields: fields))))
+        }
+        for json in [#"{"title":"T","fields":{"title":"other"}}"#, #"{"title":"T","list":"L","fields":{"listID":"other"}}"#] {
+            #expect(throws: Failure.self) { try FacadeOperations.prepare("add", arguments: arguments(json)) }
+        }
+        let definition = try #require(FacadeOperations.definitions.first { $0.name == "add" })
+        #expect(try JSONValue.properties(definition.inputSchema)["required"] == .array([.string("title")]))
+    }
     @Test func schemaRejectsUnknownNullInternalEnumsAndMissingReplacementFields() throws {
         let samples: [(String, String)] = [
             ("setup", "{}"), ("show", #"{"id":"R","setup":true}"#), ("show", #"{"id":null}"#),
@@ -67,9 +78,23 @@ struct FacadeTests {
             ("lists_edit", #"{"id":"L","fields":{"name":"N"}}"#), ("lists_delete", #"{"id":"L","confirmed":false}"#),
             ("smart_lists_edit", #"{"id":"S","definition":{"name":"N"}}"#),
             ("smart_lists_add", #"{"name":"N","definition":{"filters":[{"kind":"unknown","key":"x","payload":"AQ=="}]}}"#),
-            ("find", #"{"limit":1.5}"#), ("find", #"{"limit":0}"#), ("image", #"{"id":"R"}"#)
+            ("find", #"{"limit":1.5}"#), ("find", #"{"limit":0}"#),
+            ("find", #"{"query":{"offset":-1}}"#), ("find", #"{"query":{"text":"   "}}"#),
+            ("find", #"{"query":{"matching":"exact"}}"#), ("find", #"{"query":{"matching":"bad","text":"x"}}"#),
+            ("find", #"{"query":{"smartList":"S","flagged":false}}"#),
+            ("find", #"{"query":{"smartList":"S","completed":true}}"#),
+            ("smart_lists_add", #"{"name":"N","definition":{"filters":[{"kind":"time","fromHour":8,"fromMinute":0,"toHour":17,"toMinute":0}]}}"#),
+            ("smart_lists_add", #"{"name":"N","definition":{"filters":[{"kind":"date","value":{"kind":"overdue"}}]}}"#),
+            ("smart_lists_add", #"{"name":"N","definition":{"filters":[{"kind":"location","value":"arriving"}]}}"#),
+            ("smart_lists_add", #"{"name":"N","definition":{"filters":[{"kind":"priorities","value":["none"]}]}}"#),
+            ("smart_lists_add", #"{"name":"N","definition":{"filters":[{"kind":"date","value":{"kind":"relative","past":0,"future":1,"unit":"minutes"}}]}}"#),
+            ("find", #"{"query":{"section":"S"}}"#), ("find", #"{"query":{"tags":["x"]}}"#),
+            ("find", #"{"query":{"assigneeID":"A"}}"#), ("find", #"{"query":{"dueBefore":{}}}"#), ("image", #"{"id":"R"}"#)
         ]
-        for (name, text) in samples { #expect(throws: Failure.self) { try FacadeOperations.prepare(name, arguments: arguments(text)) } }
+        for (name, text) in samples {
+            do { _ = try FacadeOperations.prepare(name, arguments: arguments(text)); Issue.record("Expected invalid input") }
+            catch let failure as Failure { #expect(failure.code == .invalidInput) }
+        }
     }
     @Test func outputCodecRoundtripsFieldsWithoutLeakingCoreEnumsAndKeepsVersion() throws {
         var fields = ReminderFields(title: "T", listID: "L", due: .date(CalendarDate(2030, 2, 3)),
@@ -77,23 +102,31 @@ struct FacadeTests {
             recurrence: Recurrence(frequency: .monthly, end: .until(CalendarDate(2031, 1, 1))),
             location: .gettingInCar, position: .before("A"))
         fields.earlyAlerts = [EarlyAlert(before: 1, unit: .days)]
-        let item = Reminder(id: "R", fields: fields)
+        let item = Reminder(id: "R", fields: fields, creationDate: Date(timeIntervalSince1970: 0),
+            lastModifiedDate: Date(timeIntervalSince1970: 60), completionDate: Date(timeIntervalSince1970: 120))
         let output = try Presentation.output(.operation(ExecutionResult(status: .ok, result: .reminders([item]))))
         let encoded = String(decoding: try output.json(), as: UTF8.self)
         #expect(!encoded.contains("_0")); #expect(encoded.contains(#""kind":"localDateTime""#))
         guard case .object(let root) = output.result, case .array(let rows) = root["reminders"], case .object(let row) = rows[0] else { throw invalid("Expected reminder output") }
         #expect(row["version"] == .string(try item.version()))
+        #expect(row["creationDate"] == .string("1970-01-01T00:00:00Z"))
+        #expect(row["lastModifiedDate"] == .string("1970-01-01T00:01:00Z"))
+        #expect(row["completionDate"] == .string("1970-01-01T00:02:00Z"))
+        #expect(try Reminder(id: "R", fields: fields).version() == item.version())
+        #expect(throws: Failure.self) { try FacadeOperations.prepare("edit", arguments: ["id": .string("R"), "version": .string("V"), "set": .object(["creationDate": row["creationDate"]!])]) }
         let prepared = try FacadeOperations.prepare("edit", arguments: ["id": .string("R"), "version": .string("V"), "set": row["fields"]!])
         guard case .operation(.update(_, _, let patch)) = prepared.request else { throw invalid("Expected update") }
         #expect(try patch.applying(to: ReminderFields(title: "old", listID: "old")) == fields)
         let smart = SmartList(id: "S", name: "N", filters: [.date(.relative(past: 0, future: 7, unit: .days)), .unknown(key: "native", payload: Data([1]))])
         let catalog = Catalog(lists: [ReminderList(id: "L", fields: ListFields(name: "N", position: .after("B")))],
-            sections: [Section(id: "A", name: "N", listID: "L", position: .before("B"))], smartLists: [smart])
-        for projection: String? in [nil, "lists", "sections:L", "smart-lists"] {
+            sections: [Section(id: "A", name: "N", listID: "L", position: .before("B"))], smartLists: [smart],
+            templates: [NamedEntity(id: "T", name: "Template", color: "light-blue", icon: "star")])
+        for projection: String? in [nil, "lists", "sections:L", "smart-lists", "templates"] {
             let result = try Presentation.output(.operation(ExecutionResult(status: .ok, result: .catalog(catalog))), projection: projection)
             let text = String(decoding: try result.json(), as: UTF8.self)
             #expect(!text.contains("_0"))
             if projection == nil || projection == "smart-lists" { #expect(text.contains(#""kind":"unknown""#)); #expect(text.contains("AQ==")) }
+            if projection == nil || projection == "templates" { #expect(text.contains(#""color":"light-blue""#)); #expect(text.contains(#""icon":"star""#)) }
         }
     }
     @Test func invalidCallNeverSpawnsAndCancelledMutationNeverBecomesDefiniteFailure() async throws {

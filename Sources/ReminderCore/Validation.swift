@@ -1,6 +1,17 @@
 import Foundation
 
 public enum Validation {
+    public static func query(_ query: ReminderQuery) throws {
+        guard query.limit > 0, query.offset >= 0 else { throw Failure(.invalidInput, "Limit must be positive and offset nonnegative") }
+        if let text = query.text, text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw Failure(.invalidInput, "Search text must not be empty")
+        }
+        guard query.matching == nil || query.text != nil else { throw Failure(.invalidInput, "Matching requires text") }
+        if query.smartList != nil && (query.completed != nil || query.text != nil || query.matching != nil || query.list != nil || query.flagged != nil || query.urgent != nil || query.repeating != nil || query.hasLocation != nil || query.hasDueDate != nil) {
+            throw Failure(.invalidInput, "Smart list cannot be combined with search criteria")
+        }
+    }
+
     public static func date(_ date: CalendarDate) throws {
         guard (1...9999).contains(date.year), (1...12).contains(date.month), (1...31).contains(date.day) else {
             throw Failure(.invalidInput, "Invalid Gregorian date")
@@ -45,9 +56,9 @@ public enum Validation {
             guard day >= due.day else { throw Failure(.invalidInput, "Repeat end precedes due date") }
         }
     }
-    public static func fields(_ f: ReminderFields, images: [ImageInput] = []) throws {
+    public static func fields(_ f: ReminderFields, images: [ImageInput] = [], listRequired: Bool = true) throws {
         try name(f.title)
-        guard !f.listID.isEmpty else { throw Failure(.invalidInput, "List is required") }
+        guard !listRequired || !f.listID.isEmpty else { throw Failure(.invalidInput, "List is required") }
         if let due = f.due { try date(due) }
         if let start = f.start { try date(start) }
         if let due = f.due, let start = f.start,
@@ -100,20 +111,20 @@ public enum Validation {
         }
         if let icon = fields.icon { try name(icon) }
     }
-    static func filters(_ filters: [SmartFilter]) throws {
+    public static func filters(_ filters: [SmartFilter]) throws {
         for filter in filters {
             switch filter {
             case .unknown: throw Failure(.unsupported, "Unknown smart filters are read-only")
             case .tags(let values, _): try tags(values)
-            case .time(let h1, let m1, let h2, let m2):
-                guard (0...23).contains(h1), (0...23).contains(h2), (0...59).contains(m1), (0...59).contains(m2) else {
-                    throw Failure(.invalidInput, "Invalid time filter")
-                }
+            case .priorities(let values):
+                guard !values.contains(.none) else { throw Failure(.invalidInput, "Smart-filter priorities must be low, medium or high") }
             case .date(.range(let from, let before)):
                 if let from { try date(from) }; if let before { try date(before) }
                 if let from, let before, from >= before { throw Failure(.invalidInput, "Empty date range") }
-            case .date(.relative(let past, let future, _)):
-                guard past >= 0, future >= 0 else { throw Failure(.invalidInput, "Negative relative range") }
+            case .date(.relative(let past, let future, let unit)):
+                guard past >= 0, future >= 0, (past > 0) != (future > 0), unit != .minutes else {
+                    throw Failure(.invalidInput, "Relative range requires one positive direction and hour/day/week/month units")
+                }
             default: break
             }
         }
