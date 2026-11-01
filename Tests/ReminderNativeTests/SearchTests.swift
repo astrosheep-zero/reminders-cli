@@ -21,14 +21,16 @@ private final class SearchStore: NSObject {
     var failure: NSError?
     var queryResults: [String: Any] = [:]
     var titleCandidates: [SearchObject] = []
+    var parameters: [[String: Any]] = []
     @objc(fetchRemindersMatchingPredicateDescriptor:sortDescriptors:options:error:)
     func matching(_ predicate: NSObject, sort: NSArray, options: NSObject,
                   error: AutoreleasingUnsafeMutablePointer<NSError?>?) -> [SearchObject] { titleCandidates }
     @objc(resultFromPerformingSwiftInvocation:parametersData:storages:error:)
     func search(_ invocation: NSObject, data: Data, storages: NSDictionary,
                 error: AutoreleasingUnsafeMutablePointer<NSError?>?) -> NSObject {
+        let parameters = try! PropertyListSerialization.propertyList(from: data, format: nil) as! [String: Any]
+        self.parameters.append(parameters)
         if !queryResults.isEmpty {
-            let parameters = try! PropertyListSerialization.propertyList(from: data, format: nil) as! [String: Any]
             let key = (parameters["include"] as? [String])?.first ?? "labels"
             let selected = SearchReply()
             selected.resultData = try! PropertyListSerialization.data(fromPropertyList: queryResults[key]!, format: .binary, options: 0)
@@ -72,6 +74,19 @@ struct NativeSearchTests {
         #expect(tags.map { $0["totalCount"] as! Int } == [2, 1, 0])
         #expect(store.batches.count == 1)
         #expect(Set(store.batches[0]) == Set(ids))
+    }
+    @Test func nativeTagQueryEncodesIncludeExcludeAndMatchWithoutHydration() throws {
+        let bridge = SearchBridge(), store = SearchStore(), ids = [UUID().uuidString, UUID().uuidString]
+        bridge.setValue(store, forKey: "_store")
+        store.reply.resultData = try PropertyListSerialization.data(fromPropertyList: ids.map { ["uuid": $0] }, format: .binary, options: 0)
+        for all in [true, false] {
+            #expect(try bridge.reminderIDs(withIncludedTags: ["work", "home"], excludedTags: ["blocked"], matchAll: all) == ids)
+            #expect(store.parameters.last as NSDictionary? == ["include": ["work", "home"], "exclude": ["blocked"], "operation": [all ? "all" : "any": [:]]] as NSDictionary)
+        }
+        #expect(try bridge.reminderIDs(withIncludedTags: [], excludedTags: ["blocked"], matchAll: true) == ids)
+        #expect(store.parameters.last?["include"] as? [String] == []); #expect(store.batches.isEmpty)
+        store.reply.resultData = try PropertyListSerialization.data(fromPropertyList: [["uuid": "bad"]], format: .binary, options: 0)
+        #expect(throws: (any Error).self) { try bridge.reminderIDs(withIncludedTags: ["work"], excludedTags: [], matchAll: true) }
     }
     @Test func nativePageHydratesOnceInSearchOrderAndRejectsMissingOrWrongObjects() throws {
         // Real invocation/serialization/guard, fake store edges; never opens REMStore.

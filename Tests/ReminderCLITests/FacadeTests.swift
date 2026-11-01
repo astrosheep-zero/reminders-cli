@@ -15,11 +15,11 @@ struct FacadeTests {
             ("edit", #"{"id":"R","version":"V","set":{"flagged":false},"clear":["due"]}"#, .operation(.update(id: "R", version: "V", patch: { var p = ReminderPatch(); p.flagged = .set(false); p.due = .clear; return p }()))),
             ("done", #"{"id":"R","version":"V","undo":true}"#, .operation(.complete(id: "R", version: "V", completed: false))),
             ("delete", #"{"id":"R","version":"V"}"#, .operation(.delete(id: "R", version: "V"))),
-            ("deleted", "{}", .operation(.deleted)), ("catalog", "{}", .operation(.catalog(includeTags: true))),
+            ("deleted", "{}", .operation(.deleted)), ("catalog", "{}", .operation(.catalog(.all))),
             ("restore", #"{"id":"R","list":"L"}"#, .operation(.restore(id: "R", list: "L"))),
             ("image", #"{"id":"R","imageID":"I"}"#, .operation(.image(reminderID: "R", imageID: "I"))),
             ("lists_add", #"{"name":"N"}"#, .operation(.list(.create(ListFields(name: "N"))))),
-            ("lists_edit", #"{"id":"L","fields":{"name":"N","pinned":false,"kind":"standard","sort":"manual"}}"#, .operation(.list(.update("L", ListFields(name: "N"))))),
+            ("lists_edit", #"{"id":"L","fields":{"name":"N","pinned":false,"kind":"standard","sort":"manual"}}"#, .operation(.list(.update("L", { var p = ListPatch(); p.name = "N"; p.pinned = false; p.kind = .standard; p.sort = .manual; return p }())))),
             ("lists_delete", #"{"id":"L","confirmed":true}"#, .operation(.list(.delete("L", confirmed: true)))),
             ("lists_clear_completed", #"{"id":"L","confirmed":true}"#, .operation(.list(.clearCompleted("L", confirmed: true)))),
             ("groups_add", #"{"name":"N"}"#, .operation(.group(.create("N")))),
@@ -40,13 +40,16 @@ struct FacadeTests {
         ]
         var tested = Set<String>()
         for (name, json, request) in samples {
-            #expect(try FacadeOperations.prepare(name, arguments: arguments(json)).request == request); tested.insert(name)
+            #expect(try FacadeOperations.prepare(name, arguments: arguments(json)) == request); tested.insert(name)
         }
-        for family in ["lists", "groups", "sections", "tags", "smart_lists", "templates"] {
-            let prepared = try FacadeOperations.prepare(family, arguments: [:])
-            #expect(prepared.request == .operation(.catalog(includeTags: family == "tags")))
-            #expect(prepared.projection == family.replacingOccurrences(of: "_", with: "-")); tested.insert(family)
+        for (family, scope): (String, CatalogScope) in [("lists", .lists), ("groups", .groups), ("sections", .sections), ("tags", .tags), ("smart_lists", .smartLists), ("templates", .templates)] {
+            #expect(try FacadeOperations.prepare(family, arguments: [:]) == .operation(.catalog(scope)))
+            tested.insert(family)
         }
+        #expect(try FacadeOperations.prepare("sections", arguments: ["list": .string("A:B")]) == .operation(.catalog(.sections, list: "A:B")))
+        let wrongScope = WorkerResponse.operation(ExecutionResult(status: .ok, result: .catalog(Catalog(), scope: .groups)))
+        let rejected = Presentation.transportOutcome(.result(try JSONEncoder().encode(wrongScope)), request: .operation(.catalog(.lists)))
+        #expect(rejected.status == .failed); #expect(rejected.error?.code == .backend)
         let definitions = FacadeOperations.definitions
         #expect(Set(definitions.map(\.toolName)) == tested)
         #expect(definitions.count == tested.count)
@@ -57,10 +60,21 @@ struct FacadeTests {
             #expect(!definition.summary.isEmpty)
         }
     }
+    @Test func sparseListAndNativeQueryArgumentsUseTypedCurrentRequests() throws {
+        var patch = ListPatch(); patch.name = "Only rename"
+        #expect(try FacadeOperations.prepare("lists_edit", arguments: arguments(#"{"id":"L","fields":{"name":"Only rename"}}"#)) == .operation(.list(.update("L", patch))))
+        #expect(try FacadeOperations.prepare("lists_edit", arguments: arguments(#"{"id":"L","clear":["color","icon","groupID"]}"#)) == .operation(.list(.update("L", ListPatch(), clear: [.color, .icon, .groupID]))))
+        let request = try FacadeOperations.prepare("find", arguments: arguments(#"{"query":{"text":"fish","scope":"location","tags":["work","home"],"excludeTags":["blocked"],"tagMatch":"any"}}"#))
+        guard case .operation(.find(let query)) = request else { throw invalid("Expected find") }
+        #expect(query.text == "fish"); #expect(query.scope == .location)
+        #expect(query.tags == ["work", "home"]); #expect(query.excludeTags == ["blocked"]); #expect(query.tagMatch == .any)
+        let edit = try #require(FacadeOperations.definitions.first { $0.toolName == "lists_edit" })
+        #expect(try JSONValue.properties(edit.inputSchema)["required"] == .array([.string("id")]))
+    }
     @Test func creationAllowsDefaultParentOrFieldsListAndRejectsConflictingIdentity() throws {
         let samples = [#"{"title":"T"}"#, #"{"title":"T","fields":{"parentID":"P"}}"#, #"{"title":"T","fields":{"listID":"L"}}"#]
         for (json, fields) in zip(samples, [ReminderFields(title: "T", listID: ""), ReminderFields(title: "T", listID: "", parentID: "P"), ReminderFields(title: "T", listID: "L")]) {
-            #expect(try FacadeOperations.prepare("add", arguments: arguments(json)).request == .operation(.create(ReminderDraft(fields: fields))))
+            #expect(try FacadeOperations.prepare("add", arguments: arguments(json)) == .operation(.create(ReminderDraft(fields: fields))))
         }
         for json in [#"{"title":"T","fields":{"title":"other"}}"#, #"{"title":"T","list":"L","fields":{"listID":"other"}}"#] {
             #expect(throws: Failure.self) { try FacadeOperations.prepare("add", arguments: arguments(json)) }
@@ -75,7 +89,10 @@ struct FacadeTests {
             ("edit", #"{"id":"R","version":"V","set":{"due":{"date":{"_0":{"year":2030,"month":1,"day":1}}}}}"#),
             ("edit", #"{"id":"R","version":"V","set":{"due":{"kind":"date","value":{"year":2030,"month":1,"day":1,"unknown":2}}}}"#),
             ("edit", #"{"id":"R","version":"V","set":{"notes":"x"},"clear":["notes"]}"#),
-            ("lists_edit", #"{"id":"L","fields":{"name":"N"}}"#), ("lists_delete", #"{"id":"L","confirmed":false}"#),
+            ("lists_edit", #"{"id":"L","fields":{}}"#), ("lists_delete", #"{"id":"L","confirmed":false}"#),
+            ("lists_edit", #"{"id":"L","fields":{"color":"red"},"clear":["color"]}"#),
+            ("lists_edit", #"{"id":"L","clear":["icon","icon"]}"#), ("lists_edit", #"{"id":"L","clear":["name"]}"#),
+            ("lists_edit", #"{"id":"L","fields":{"color":null}}"#),
             ("smart_lists_edit", #"{"id":"S","definition":{"name":"N"}}"#),
             ("smart_lists_add", #"{"name":"N","definition":{"filters":[{"kind":"unknown","key":"x","payload":"AQ=="}]}}"#),
             ("find", #"{"limit":1.5}"#), ("find", #"{"limit":0}"#),
@@ -88,7 +105,10 @@ struct FacadeTests {
             ("smart_lists_add", #"{"name":"N","definition":{"filters":[{"kind":"location","value":"arriving"}]}}"#),
             ("smart_lists_add", #"{"name":"N","definition":{"filters":[{"kind":"priorities","value":["none"]}]}}"#),
             ("smart_lists_add", #"{"name":"N","definition":{"filters":[{"kind":"date","value":{"kind":"relative","past":0,"future":1,"unit":"minutes"}}]}}"#),
-            ("find", #"{"query":{"section":"S"}}"#), ("find", #"{"query":{"tags":["x"]}}"#),
+            ("find", #"{"query":{"section":"S"}}"#), ("find", #"{"query":{"tags":[""]}}"#),
+            ("find", #"{"query":{"scope":"title"}}"#), ("find", #"{"query":{"scope":"notes","text":"x"}}"#),
+            ("find", #"{"query":{"tagMatch":"any"}}"#), ("find", #"{"query":{"tagMatch":"bad","tags":["x"]}}"#),
+            ("find", #"{"query":{"smartList":"S","excludeTags":["x"]}}"#),
             ("find", #"{"query":{"assigneeID":"A"}}"#), ("find", #"{"query":{"dueBefore":{}}}"#), ("image", #"{"id":"R"}"#)
         ]
         for (name, text) in samples {
@@ -115,18 +135,20 @@ struct FacadeTests {
         #expect(try Reminder(id: "R", fields: fields).version() == item.version())
         #expect(throws: Failure.self) { try FacadeOperations.prepare("edit", arguments: ["id": .string("R"), "version": .string("V"), "set": .object(["creationDate": row["creationDate"]!])]) }
         let prepared = try FacadeOperations.prepare("edit", arguments: ["id": .string("R"), "version": .string("V"), "set": row["fields"]!])
-        guard case .operation(.update(_, _, let patch)) = prepared.request else { throw invalid("Expected update") }
+        guard case .operation(.update(_, _, let patch)) = prepared else { throw invalid("Expected update") }
         #expect(try patch.applying(to: ReminderFields(title: "old", listID: "old")) == fields)
         let smart = SmartList(id: "S", name: "N", filters: [.date(.relative(past: 0, future: 7, unit: .days)), .unknown(key: "native", payload: Data([1]))])
         let catalog = Catalog(lists: [ReminderList(id: "L", fields: ListFields(name: "N", position: .after("B")))],
             sections: [Section(id: "A", name: "N", listID: "L", position: .before("B"))], smartLists: [smart],
             templates: [NamedEntity(id: "T", name: "Template", color: "light-blue", icon: "star")])
-        for projection: String? in [nil, "lists", "sections:L", "smart-lists", "templates"] {
-            let result = try Presentation.output(.operation(ExecutionResult(status: .ok, result: .catalog(catalog))), projection: projection)
+        for scope in CatalogScope.allCases {
+            let result = try Presentation.output(.operation(ExecutionResult(status: .ok, result: .catalog(catalog, scope: scope))))
             let text = String(decoding: try result.json(), as: UTF8.self)
+            let body = try JSONValue.properties(try #require(result.result))
+            #expect(Set(body.keys) == ["kind", scope.rawValue]); #expect(body["kind"] == .string(scope.rawValue))
             #expect(!text.contains("_0"))
-            if projection == nil || projection == "smart-lists" { #expect(text.contains(#""kind":"unknown""#)); #expect(text.contains("AQ==")) }
-            if projection == nil || projection == "templates" { #expect(text.contains(#""color":"light-blue""#)); #expect(text.contains(#""icon":"star""#)) }
+            if scope == .all || scope == .smartLists { #expect(text.contains(#""kind":"unknown""#)); #expect(text.contains("AQ==")) }
+            if scope == .all || scope == .templates { #expect(text.contains(#""color":"light-blue""#)); #expect(text.contains(#""icon":"star""#)) }
         }
     }
     @Test func invalidCallNeverSpawnsAndCancelledMutationNeverBecomesDefiniteFailure() async throws {

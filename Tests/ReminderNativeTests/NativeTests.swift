@@ -184,7 +184,7 @@ struct ReminderNativeTests {
     }
     @Test func factoryFailureIsNotAnEmptyCatalog() {
         let backend = NativeReminderBackend(openBridge: { throw Failure(.unsupported, "injected missing framework") }, permission: { "fullAccess" })
-        failure(.unsupported) { _ = try backend.catalog(includeTags: false) }
+        failure(.unsupported) { _ = try backend.catalog([.lists]) }
     }
     @Test func objcExceptionFenceCatchesWithoutLoadingReminderKit() {
         var error: NSError?

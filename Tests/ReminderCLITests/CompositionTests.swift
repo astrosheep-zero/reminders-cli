@@ -12,7 +12,7 @@ private final class FixtureBackend: ReminderBackend {
     var throwsAfterSave = false
     var deleted = false
     func checkSupport(for command: Command) throws {}
-    func catalog(includeTags: Bool) throws -> Catalog { Catalog(lists: [ReminderList(id: "fixture-list", fields: ListFields(name: "Fixture list"))]) }
+    func catalog(_ scopes: Set<CatalogScope>, listID: String? = nil) throws -> Catalog { Catalog(lists: [ReminderList(id: "fixture-list", fields: ListFields(name: "Fixture list"))]) }
     func reminder(id: String) throws -> Reminder? { id == item.id && !deleted ? item : nil }
     func find(_ query: ReminderQuery) throws -> [Reminder] { deleted ? [] : [item] }
     func createReminder(_ draft: ReminderDraft) throws -> MutationResult {
@@ -45,7 +45,7 @@ struct CompositionTests {
     @Test func parserToSerializedWorkerCoreAndVersionedOutput() throws {
         let backend = FixtureBackend()
         let invocation = try CLIParser.parse(["edit", backend.item.id, "--version", backend.item.version(), "--set-json", #"{"notes":"hello"}"#])
-        guard case .operation(let command, _) = invocation.request else { throw CLIParser.invalid("Expected operation") }
+        guard case .worker(.operation(let command)) = invocation.request else { throw CLIParser.invalid("Expected operation") }
         let request = try JSONDecoder().decode(WorkerRequest.self, from: JSONEncoder().encode(WorkerRequest.operation(command)))
         var callbacks = 0
         let response = composition(backend).execute(request, beforeMutation: { callbacks += 1; #expect(backend.saved == 0) })
@@ -65,7 +65,7 @@ struct CompositionTests {
         var worker = composition(backend); worker.journalURL = directory.appendingPathComponent("deleted.json")
         var mutations = 0
         func run(_ args: [String]) throws -> OutputEnvelope {
-            guard case .operation(let command, _) = try CLIParser.parse(args).request else { throw CLIParser.invalid("Expected operation") }
+            guard case .worker(.operation(let command)) = try CLIParser.parse(args).request else { throw CLIParser.invalid("Expected operation") }
             let response = worker.execute(.operation(command), beforeMutation: { mutations += 1 })
             return Presentation.transportOutcome(.result(try JSONEncoder().encode(response)), mutationStarted: mutations > 0, request: .operation(command))
         }

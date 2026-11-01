@@ -37,12 +37,12 @@ empty image additions/removals. Other Core models do not inherit patch-specific 
 
 - `.find(ReminderQuery)`, `.show(String)`, `.image(reminderID:imageID:)`;
 - `.create(ReminderDraft)`, `.update(id:version:patch:)`, `.complete(id:version:completed:)`;
-- `.delete(id:version:)`, `.restore(id:list:)`, `.deleted`, `.catalog(includeTags: Bool)`;
+- `.delete(id:version:)`, `.restore(id:list:)`, `.deleted`, `.catalog(CatalogScope, list: String? = nil)`;
 - `.list(ListAction)`, `.group(GroupAction)`, `.section(SectionAction)`, `.tag(TagAction)`,
   `.smartList(SmartListAction)`, `.template(TemplateAction)`.
 
 `ExecutionResult` encodes `{status: ok|failed|unknown, result?, error?, warnings: []}`.
-`OperationResult` cases are `.reminders([Reminder])`, `.catalog(Catalog)`,
+`OperationResult` cases are `.reminders([Reminder])`, `.catalog(Catalog, scope: CatalogScope = .all)`,
 `.mutation(MutationResult)`, `.deleted(DeletedResult)`, `.image(ImageInput)`.
 `MutationResult` has `affectedIDs`, verified/known `reminders`, `lists`, and computed `count`.
 Count always derives from `affectedIDs.count`, including after decoding a receipt. It is no longer
@@ -78,7 +78,7 @@ coordinates + arriving/leaving, or car entry/exit. Contact alerts take explicit 
 never queries Contacts. ImageInput contains **bytes + basic filename/content type**, never a path.
 Native must stage its own private file and safely manage consumption/cleanup.
 
-`ReminderQuery` exposes text, matching (`exact`, `prefix`, `word`), list, smartList, includeCompleted, completed (`Bool?`), flagged, urgent, repeating, hasLocation, hasDueDate, limit and offset. Matching defaults to `word` when text is present; blank text and matching without text are invalid. Smart-list mode is mutually exclusive with all criteria, while includeCompleted, limit and offset apply to both modes. In ordinary mode, `completed` takes precedence over `includeCompleted`: true/false requests only completed/incomplete; nil plus includeCompleted=true requests all; nil plus false/default requests incomplete. Smart-list mode rejects any nonnil `completed`. Default limit is 100 and offset 0. Native owns matching and ordering; criteria pagination is native and smart-list pagination slices native IDs. Paging is not a stable snapshot across requests. Core resolves list and smart-list names. Title resolution uses complete native `reminders(matchingTitle:)` results without a local title filter. Deletion uses exhaustive `reminders(listID:)` reads, including completed items and children, never paginated find.
+`ReminderQuery` exposes text, matching (`exact`, `prefix`, `word`), scope (`SearchScope.all/title/location`), optional tags/excludeTags arrays, tagMatch (`MatchMode.all/any`), list, smartList, includeCompleted, completed (`Bool?`), flagged, urgent, repeating, hasLocation, hasDueDate, limit and offset. Matching/scope default to `word`/`all`; blank text and matching/scope without text are invalid. Tags must be nonempty labels without #/whitespace/NUL; omitted/empty arrays add no filtering. Included tags default to all-of; tagMatch requires nonempty included tags. Native include/exclude selection returns early for no IDs; nonempty IDs intersect other native criteria via objectID. Tag-only queries with includeCompleted=true paginate the native IDs before hydration. Default completion filtering remains a native criterion. No local text/tag filtering is used. Optional-date range encodings are not established, so date criterion filters are deliberately not added. Smart-list mode is mutually exclusive with all criteria, while includeCompleted, limit and offset apply to both modes. In ordinary mode, `completed` takes precedence over `includeCompleted`: true/false requests only completed/incomplete; nil plus includeCompleted=true requests all; nil plus false/default requests incomplete. Smart-list mode rejects any nonnil `completed`. Default limit is 100 and offset 0. Native owns matching and ordering; criteria pagination is native and smart-list pagination slices native IDs. Paging is not a stable snapshot across requests. Core resolves list and smart-list names. Title resolution uses complete native `reminders(matchingTitle:)` results without a local title filter. Deletion uses exhaustive `reminders(listID:)` reads, including completed items and children, never paginated find.
 
 `Validation.query`, `.date`, `.recurrence`, `.fields`, `.filters`, and `.name` are public pure functions, usable by the CLI
 without native access. `.fields(..., listRequired: false)` validates unresolved creation drafts without inventing a list identity; after Core resolves parent/default/explicit list, normal field validation requires a nonempty listID. `execute` validates syntax before backend preflight; projected patch validation
@@ -105,18 +105,13 @@ No invitation or system-default-list setter is implied.
 
 ## Containers
 
-`Catalog` contains lists, groups, sections, tags, smartLists, templates. `Command.catalog(includeTags:)`
-and `ReminderBackend.catalog(includeTags:)` explicitly select tag-inclusive or metadata-only projection.
-Container/member resolution requests `includeTags: false`; tag actions use native label matching directly. Native tag preflight rejects missing label identities before the mutation marker and rechecks them within the guarded operation. False intentionally
-omits tags rather than claiming there are no tags, while true requires accurate counts or an error. This
-prevents ordinary title edits from enumerating every reminder/image just to resolve a list/member name.
-List metadata includes name,
-color/icon/group/pin/kind/sort/position/default flag/members. ListAction creates, **fully replaces**
-editable list fields, clears completed, or deletes. Full replacement is intentional; a CLI must require
-an explicit full definition rather than fill unspecified fields with defaults. Native list `position` is
-an ordering directive, not a readable/clearable snapshot field: Native returns nil on read and nil in a
-full replacement means no reordering directive. Other editable list fields remain full replacement.
-GroupAction creates,
+`Catalog` contains lists, groups, sections, tags, smartLists, templates. `CatalogScope` is `.all` (public kind `catalog`), `.lists`, `.groups`, `.sections`, `.tags`, `.smartLists`, `.templates`. `Command.catalog(scope,list:)` returns `.catalog(Catalog,scope:)`; a list filter is valid only for sections. Core resolves that list's exact name/case-insensitive ID before asking for its sections. Colons in names are ordinary characters. Public JSON keeps the existing catalog/family kind and array shapes.
+
+`ReminderBackend.catalog(_ scopes:Set<CatalogScope>,listID:String?)` reads only requested native families; the one-argument convenience forwards nil listID through the protocol requirement. `.all` reads all families, including accurate tag counts. Unrequested arrays are empty **by scope**, not evidence of global absence. Lists do not load sections/groups/smart lists/templates; sections have their own native read. Reminder create/edit resolve only lists and, if needed, sections in the resolved list. Group/smart/template operations request their relevant families; unrelated malformed smart lists/templates cannot break reminder edits. Tag actions select native labels directly and reject missing identities before mutation.
+
+List metadata includes name/color/icon/group/pin/kind/sort/position/default flag/members. ListAction creates, sparsely updates, clears completed, or deletes. `.update(reference,ListPatch,clear:[ListClear]=[])` merges optional patch fields over the current `ReminderList.fields` in Core. Omitted name/color/icon/group/pin/kind/sort are preserved; explicit false is retained. `ListClear` permits only color/icon/groupID, with duplicate or set/clear conflicts rejected by `ListPatch.validate(clear:)`. A patch or nonempty clear is required. Core validates the merged fields and resolves grouping/order references before mutation. Native receives full resolved fields via `createList(_:)`, `updateList(id:fields:)`, or `deleteList(id:)`, never a clear-completed action. This is a local read/merge/save, not an atomic cross-device merge.
+
+Native list `position` is a write-only directive: reads return nil, omitted patch position means no reordering, and an existing snapshot neighbor is never replayed. Clearing position is not supported. GroupAction creates,
 renames, deletes an empty group. SectionAction creates/renames/moves/deletes (deleting retains reminders).
 TagAction renames/merges or removes a tag. SmartListAction creates, fully replaces, deletes;
 SmartFilter explicitly models tags/date/priorities/flagged/lists/location and preserves unknown fields
@@ -131,17 +126,17 @@ not a fabricated zero-write failure.
 - `checkSupport(for: Command)` is read-only preflight: reject missing methods, unsupported enum/field/
   filter shapes before any save. It may diagnose permissions but must not request them. Defaults fail
   unsupported, never return empty success. Actual native support is not promised by Core models.
-- Read methods: `catalog(includeTags:)`, `find(_:)`, `reminders(listID:)`, `reminders(matchingTitle:)`, `reminder(id:)`, `image(reminderID:imageID:)`,
+- Read methods: `catalog(_:listID:)`, `find(_:)`, `reminders(listID:)`, `reminders(matchingTitle:)`, `reminder(id:)`, `image(reminderID:imageID:)`,
   `restorableState(id:)`. Reads/preflight **must not save**. `reminder(id:)` uses native by-ID lookup and
   case-insensitive IDs. If an implementation lacks native lookup it must document its fallback.
 - `createReminder(_:)`, `updateReminder(id:patch:)`, `deleteReminders(ids:)`,
-  `restoreReminder(id:listID:knownChildIDs:parentID:)`, and typed per-family action methods return MutationResult.
+  `restoreReminder(id:listID:knownChildIDs:parentID:)`, `createList(_:)`, `updateList(id:fields:)`, `deleteList(id:)`, and the other typed per-family action methods return MutationResult.
   Core calls onMutation immediately before entering any of them. Native must not perform mutating
   methods from any other path. Sparse update must honor absent versus set/clear, never rewrite untouched
   native recurrence/alarm/order state. References in set fields are normalized to IDs by Core.
 - Deleting a parent supplies parent + known children to **one backend request/save**; do not loop saves.
   Core clear-completed selects and journals exact IDs, then uses deleteReminders(ids:) rather than asking
-  Native to select again. Empty clear-completed returns count=0 without native mutation.
+  Native to select again. ListAction.clearCompleted is Core-only; there is no backend list-action dispatch or duplicate Native selection branch. Empty clear-completed returns count=0 without native mutation.
   No clone/delete cross-list fallback. Refuse cross-list parenting, nesting, self-parenting, parent
   moves with children, or invalid neighbor/section. Backend should enforce native limits too.
 - `restoreReminder` gets saved child and parent IDs plus root and target list. It must restore/report all known
@@ -196,4 +191,4 @@ Focused tests use only in-memory backends and temporary files; journal concurren
 built test runner in independent subprocesses. They never request permission or touch real reminders,
 setup, signing identities, TCC, or settings. No fake native success is represented as live verification.
 
-Current 2026-11-01 verification: plain `swift test` passes 136 tests, including all 44 Core tests in two suites and four subprocesses preserving all 120 journal updates. The older `scripts/test.sh` wrapper remains available for CLT installations needing explicit TestingMacros discovery; this run did not need it. Existing linker warnings about missing optional CLT search directories do not prevent tests from passing. Core production sources total 1,253 physical lines. The contract/wiring repair reduces all Swift/ObjC/C implementation files under `Sources/` from 4,897 to 4,895 lines (including headers: 4,997 to 4,995); no compatibility shim or source relocation is used. This is offline evidence only; historical signed-live evidence remains separate in [coverage](coverage.md).
+Current 2026-11-01 verification: plain `swift test` passes **147 tests**, including all **47 Core tests** in two suites and four subprocesses preserving all 120 journal updates. Added coverage verifies family-only reads, list-name/ID section resolution (including colon-containing names), create/update dependencies, sparse list preservation, explicit false/clears/conflicts, and exact journaled clear-completed IDs. Native/facade tests use current APIs, not compatibility shims. During iteration this CLT also intermittently missed TestingMacros; a direct `swift test --disable-xctest -Xswiftc -load-plugin-library -Xswiftc /Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing/libTestingMacros.dylib` run passed with the real installed plugin, followed by a successful plain run. No test wrapper, live script, dist executable, setup, TCC or keychain operation was run. Existing optional CLT linker-search warnings remain. Core sources total **1,293** physical lines. Whole Sources implementation files are **4,895 → 4,928 (+33)**, including headers **4,995 → 5,030 (+35)**; the net-reduction aim was not reached, with no source relocation or count-only compression. This is offline evidence only; historical signed-live evidence remains separate in [coverage](coverage.md).

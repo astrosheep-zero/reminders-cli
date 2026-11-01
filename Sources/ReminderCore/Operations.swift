@@ -56,13 +56,12 @@ public final class Operations: @unchecked Sendable {
     }
     private func run(_ command: Command) throws -> OperationResult {
         switch command {
-        case .catalog(let includeTags): return .catalog(try backend.catalog(includeTags: includeTags))
+        case .catalog(let scope, let list):
+            let id = try list.map { try resolveList($0, backend.catalog([.lists])).id }
+            return .catalog(try backend.catalog([scope], listID: id), scope: scope)
         case .find(var query):
-            if query.list != nil || query.smartList != nil {
-                let catalog = try backend.catalog(includeTags: false)
-                if let list = query.list { query.list = try resolveList(list, catalog).id }
-                if let smart = query.smartList { query.smartList = try resolve(smart, catalog.smartLists.map { ($0.id, $0.name) }) }
-            }
+            if let list = query.list { query.list = try resolveList(list, backend.catalog([.lists])).id }
+            if let smart = query.smartList { query.smartList = try resolve(smart, backend.catalog([.smartLists]).smartLists.map { ($0.id, $0.name) }) }
             return .reminders(try backend.find(query))
         case .show(let reference): return .reminders([try reminder(reference)])
         case .image(let reference, let imageID):
@@ -70,7 +69,7 @@ public final class Operations: @unchecked Sendable {
             guard let image = item.images.first(where: { same($0.id, imageID) }) else { throw Failure(.notFound, "Image not found") }
             return .image(try backend.image(reminderID: item.id, imageID: image.id))
         case .create(var draft):
-            let catalog = try backend.catalog(includeTags: false)
+            let catalog = try backend.catalog([.lists])
             if draft.fields.listID.isEmpty {
                 if let parent = draft.fields.parentID { draft.fields.listID = try reminder(parent).fields.listID }
                 else {
@@ -89,7 +88,7 @@ public final class Operations: @unchecked Sendable {
             let current = try reminder(reference)
             try check(current, version)
             var fields = try patch.applying(to: current.fields)
-            try resolveFields(&fields, catalog: backend.catalog(includeTags: false))
+            try resolveFields(&fields, catalog: backend.catalog([.lists]))
             try Validation.fields(fields, images: patch.addImages)
             guard patch.removeImageIDs.allSatisfy({ id in current.images.contains { same($0.id, id) } }) else {
                 throw Failure(.notFound, "Image to remove not found")
@@ -158,7 +157,7 @@ public final class Operations: @unchecked Sendable {
         let list = try resolveList(fields.listID, catalog); fields.listID = list.id
         if let parent = fields.parentID { fields.parentID = try reminder(parent).id }
         if let section = fields.sectionID {
-            fields.sectionID = try resolve(section, catalog.sections.filter { same($0.listID, list.id) }.map { ($0.id, $0.name) })
+            fields.sectionID = try resolve(section, backend.catalog([.sections], listID: list.id).sections.map { ($0.id, $0.name) })
         }
         if let position = fields.position { fields.position = replacing(position, with: try byID(position.neighborID).id) }
         if let member = fields.assigneeID {
@@ -267,7 +266,7 @@ public final class Operations: @unchecked Sendable {
         let entry = entries.first { $0.id == savedID }
         let id = entry?.id ?? reference
         guard let list = target ?? entry?.listID else { throw Failure(.invalidInput, "Restore requires saved original list or explicit target") }
-        let listID = try resolveList(list, backend.catalog(includeTags: false)).id
+        let listID = try resolveList(list, backend.catalog([.lists])).id
         guard try backend.restorableState(id: id) == .restorable else { throw Failure(.notFound, "Reminder is not restorable") }
         let expected = entries.filter { same($0.id, id) || $0.parentID.map { same($0, id) } == true }.map(\.id)
         // A saved child can only rejoin an active top-level parent in the target list.
@@ -349,10 +348,10 @@ public final class Operations: @unchecked Sendable {
         return .mutation(mutation)
     }
     private func list(_ input: ListAction) throws -> OperationResult {
-        let catalog = try backend.catalog(includeTags: false)
+        let catalog = try backend.catalog([.lists])
         func fields(_ original: ListFields, currentID: String? = nil) throws -> ListFields {
             var f = original; try Validation.list(f)
-            if let group = f.groupID { f.groupID = try resolve(group, catalog.groups.map { ($0.id, $0.name) }) }
+            if let group = f.groupID { f.groupID = try resolve(group, backend.catalog([.groups]).groups.map { ($0.id, $0.name) }) }
             if let position = f.position {
                 let neighbor = try resolveList(position.neighborID, catalog)
                 guard neighbor.id != currentID, neighbor.fields.groupID == f.groupID else { throw Failure(.invalidInput, "Invalid list order neighbor") }
@@ -362,10 +361,10 @@ public final class Operations: @unchecked Sendable {
         }
         switch input {
         case .create(let f):
-            let action = ListAction.create(try fields(f)); return try mutate { try backend.list(action) }
-        case .update(let name, let f):
-            let id = try resolveList(name, catalog).id
-            let action = ListAction.update(id, try fields(f, currentID: id)); return try mutate { try backend.list(action) }
+            let f = try fields(f); return try mutate { try backend.createList(f) }
+        case .update(let name, let patch, let clear):
+            let current = try resolveList(name, catalog), f = try fields(patch.applying(to: current.fields, clear: clear), currentID: current.id)
+            return try mutate { try backend.updateList(id: current.id, fields: f) }
         case .delete(let name, _), .clearCompleted(let name, _):
             let id = try resolveList(name, catalog).id
             let all = try backend.reminders(listID: id)
@@ -378,14 +377,14 @@ public final class Operations: @unchecked Sendable {
                     if selectedIDs.insert(child.id.lowercased()).inserted { selected.append(child) }
                 }
             }
-            if isDelete { return try deleting(selected, additionalReceiptIDs: [id]) { try backend.list(.delete(id, confirmed: true)) } }
+            if isDelete { return try deleting(selected, additionalReceiptIDs: [id]) { try backend.deleteList(id: id) } }
             guard !selected.isEmpty else { return .mutation(MutationResult(affectedIDs: [])) }
             // Delete the exact journaled snapshot, not a second native selection that could grow.
             return try deleting(selected) { try backend.deleteReminders(ids: selected.map(\.id)) }
         }
     }
     private func group(_ input: GroupAction) throws -> OperationResult {
-        let catalog = try backend.catalog(includeTags: false); let action: GroupAction
+        let catalog = try backend.catalog([.groups, .lists]); let action: GroupAction
         switch input {
         case .create: action = input
         case .rename(let group, let name): action = .rename(try resolve(group, catalog.groups.map { ($0.id, $0.name) }), name: name)
@@ -399,28 +398,26 @@ public final class Operations: @unchecked Sendable {
         return try mutate { try backend.group(action) }
     }
     private func section(_ input: SectionAction) throws -> OperationResult {
-        let catalog = try backend.catalog(includeTags: false); let action: SectionAction
-        func sectionID(_ section: String, _ list: String) throws -> String {
-            try resolve(section, catalog.sections.filter { same($0.listID, list) }.map { ($0.id, $0.name) })
-        }
+        let list: String
+        switch input { case .create(let value, _), .rename(let value, _, _), .move(let value, _, _), .delete(let value, _, _): list = value }
+        let id = try resolveList(list, backend.catalog([.lists])).id, action: SectionAction
+        let sections = if case .create = input { [Section]() } else { try backend.catalog([.sections], listID: id).sections }
+        func sectionID(_ reference: String) throws -> String { try resolve(reference, sections.map { ($0.id, $0.name) }) }
         switch input {
-        case .create(let list, let name): action = .create(list: try resolveList(list, catalog).id, name: name)
-        case .rename(let list, let section, let name):
-            let id = try resolveList(list, catalog).id
-            action = .rename(list: id, section: try sectionID(section, id), name: name)
-        case .move(let list, let section, let position):
-            let id = try resolveList(list, catalog).id
-            let section = try sectionID(section, id), neighbor = try sectionID(position.neighborID, id)
+        case .create(_, let name): action = .create(list: id, name: name)
+        case .rename(_, let section, let name): action = .rename(list: id, section: try sectionID(section), name: name)
+        case .move(_, let section, let position):
+            let section = try sectionID(section), neighbor = try sectionID(position.neighborID)
             guard section != neighbor else { throw Failure(.invalidInput, "Cannot order section against itself") }
             action = .move(list: id, section: section, position: replacing(position, with: neighbor))
-        case .delete(let list, let section, _):
-            let id = try resolveList(list, catalog).id
-            action = .delete(list: id, section: try sectionID(section, id), confirmed: true)
+        case .delete(_, let section, _): action = .delete(list: id, section: try sectionID(section), confirmed: true)
         }
         return try mutate { try backend.section(action) }
     }
     private func smartList(_ input: SmartListAction) throws -> OperationResult {
-        let catalog = try backend.catalog(includeTags: false); let action: SmartListAction
+        let scopes: Set<CatalogScope>
+        switch input { case .create: scopes = [.lists]; case .update: scopes = [.lists, .smartLists]; case .delete: scopes = [.smartLists] }
+        let catalog = try backend.catalog(scopes); let action: SmartListAction
         func definition(_ original: SmartList) throws -> SmartList {
             var result = original; try Validation.name(result.name); try Validation.filters(result.filters)
             result.filters = try result.filters.map { filter in
@@ -442,7 +439,8 @@ public final class Operations: @unchecked Sendable {
         return try mutate { try backend.smartList(action) }
     }
     private func template(_ input: TemplateAction) throws -> OperationResult {
-        let catalog = try backend.catalog(includeTags: false); let action: TemplateAction
+        let scopes: Set<CatalogScope> = if case .create = input { [.lists] } else { [.templates] }
+        let catalog = try backend.catalog(scopes); let action: TemplateAction
         switch input {
         case .create(let name, let list, let include): action = .create(name: name, list: try resolveList(list, catalog).id, includeCompleted: include)
         case .use(let template, let name): action = .use(try resolve(template, catalog.templates.map { ($0.id, $0.name) }), newListName: name)
@@ -456,6 +454,8 @@ public final class Operations: @unchecked Sendable {
     private func validateInput(_ command: Command) throws {
         func confirmed(_ yes: Bool) throws { guard yes else { throw Failure(.invalidInput, "Explicit confirmation required") } }
         switch command {
+        case .catalog(let scope, let list):
+            guard list == nil || scope == .sections else { throw Failure(.invalidInput, "List filter requires sections scope") }
         case .find(let query):
             try Validation.query(query)
         case .create(let draft):
@@ -464,7 +464,8 @@ public final class Operations: @unchecked Sendable {
             guard !version.isEmpty else { throw Failure(.invalidInput, "Version is required") }
         case .list(let action):
             switch action {
-            case .create(let f), .update(_, let f): try Validation.list(f)
+            case .create(let f): try Validation.list(f)
+            case .update(_, let patch, let clear): try patch.validate(clear: clear)
             case .delete(_, let yes), .clearCompleted(_, let yes): try confirmed(yes)
             }
         case .group(let action):

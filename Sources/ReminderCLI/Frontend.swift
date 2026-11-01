@@ -35,18 +35,15 @@ func frontend(_ arguments: [String], client: RuntimeClient = RuntimeClient(), bu
     do {
         let invocation = try CLIParser.parse(arguments)
         let request: WorkerRequest?
-        let projection: String?
         switch invocation.request {
-        case .help: request = nil; projection = nil
-        case .setup: request = .setup; projection = nil
-        case .doctor: request = .doctor; projection = nil
+        case .help: request = nil
         case .mcp: throw invalid("Run reminder mcp without other arguments")
-        case .operation(let command, let view): request = .operation(command); projection = view
+        case .worker(let value): request = value
         }
         if let request {
             let interrupts = FrontendInterrupts()
             output = withExtendedLifetime(interrupts) {
-                RemindersFacade(client: client, buildID: buildID).execute(request, projection: projection, cancellation: interrupts.cancellation)
+                RemindersFacade(client: client, buildID: buildID).execute(request, cancellation: interrupts.cancellation)
             }
         } else { output = OutputEnvelope(status: .ok, result: .object(["kind": .string("help"), "help": .string(CLIParser.help)])) }
     } catch {

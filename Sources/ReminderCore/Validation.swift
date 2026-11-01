@@ -6,8 +6,10 @@ public enum Validation {
         if let text = query.text, text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             throw Failure(.invalidInput, "Search text must not be empty")
         }
-        guard query.matching == nil || query.text != nil else { throw Failure(.invalidInput, "Matching requires text") }
-        if query.smartList != nil && (query.completed != nil || query.text != nil || query.matching != nil || query.list != nil || query.flagged != nil || query.urgent != nil || query.repeating != nil || query.hasLocation != nil || query.hasDueDate != nil) {
+        guard (query.matching == nil && query.scope == nil) || query.text != nil else { throw Failure(.invalidInput, "Matching/scope requires text") }
+        try tags((query.tags ?? []) + (query.excludeTags ?? []))
+        guard query.tagMatch == nil || !(query.tags ?? []).isEmpty else { throw Failure(.invalidInput, "Tag match requires included tags") }
+        if query.smartList != nil && (query.completed != nil || query.text != nil || query.matching != nil || query.scope != nil || query.tags != nil || query.excludeTags != nil || query.tagMatch != nil || query.list != nil || query.flagged != nil || query.urgent != nil || query.repeating != nil || query.hasLocation != nil || query.hasDueDate != nil) {
             throw Failure(.invalidInput, "Smart list cannot be combined with search criteria")
         }
     }

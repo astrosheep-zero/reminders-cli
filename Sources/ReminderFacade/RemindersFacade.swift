@@ -14,20 +14,20 @@ public final class RemindersFacade: @unchecked Sendable {
     public init(client: RuntimeClient = RuntimeClient(), buildID: String = BuildIdentity.current) {
         self.client = client; self.buildID = buildID
     }
-    public func execute(_ request: WorkerRequest, projection: String? = nil, cancellation: RuntimeCancellation? = nil) -> OutputEnvelope {
-        queue.sync { perform(request, projection: projection, cancellation: cancellation) }
+    public func execute(_ request: WorkerRequest, cancellation: RuntimeCancellation? = nil) -> OutputEnvelope {
+        queue.sync { perform(request, cancellation: cancellation) }
     }
-    private func perform(_ request: WorkerRequest, projection: String?, cancellation: RuntimeCancellation?) -> OutputEnvelope {
+    private func perform(_ request: WorkerRequest, cancellation: RuntimeCancellation?) -> OutputEnvelope {
         do {
             let deadline = if case .setup = request { RuntimeLimits.setupDeadline } else { RuntimeLimits.defaultDeadline }
             let reply = client.execute(request: try JSONEncoder().encode(request), buildID: buildID, deadline: deadline, cancellation: cancellation)
             if !reply.diagnostics.isEmpty { try? FileHandle.standardError.write(contentsOf: reply.diagnostics) }
-            return Presentation.transport(reply, request: request, projection: projection)
+            return Presentation.transport(reply, request: request)
         } catch { return .failure(error as? Failure ?? Failure(.io, String(describing: error))) }
     }
     public func call(_ name: String, arguments: [String: JSONValue]) async -> OutputEnvelope {
-        let operation: PreparedOperation
-        do { operation = try FacadeOperations.prepare(name, arguments: arguments) }
+        let request: WorkerRequest
+        do { request = try FacadeOperations.prepare(name, arguments: arguments) }
         catch { return .failure(error as? Failure ?? invalid(String(describing: error))) }
         let id = UUID(), cancellation = RuntimeCancellation()
         lock.withLock { if stopped { cancellation.cancel() }; requests[id] = cancellation }
@@ -36,7 +36,7 @@ public final class RemindersFacade: @unchecked Sendable {
             // Serialize data operations away from the SDK receive loop. A queued cancellation
             // reaches Runtime's pre-spawn check, so it can never become a delayed write.
             await withCheckedContinuation { continuation in
-                queue.async { continuation.resume(returning: self.perform(operation.request, projection: operation.projection, cancellation: cancellation)) }
+                queue.async { continuation.resume(returning: self.perform(request, cancellation: cancellation)) }
             }
         } onCancel: { cancellation.cancel() }
     }

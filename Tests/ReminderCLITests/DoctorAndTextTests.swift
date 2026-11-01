@@ -50,7 +50,7 @@ struct DoctorAndTextTests {
         #expect(text.contains("fixture-id")); #expect(text.contains("Buy milk")); #expect(text.contains("2030-02-03"))
         #expect(text.contains(try item.version()))
         let list = ReminderList(id: "list-id", fields: ListFields(name: "Work"), isDefault: true)
-        let lists = try Presentation.output(.operation(ExecutionResult(status: .ok, result: .catalog(Catalog(lists: [list])))), projection: "lists")
+        let lists = try Presentation.output(.operation(ExecutionResult(status: .ok, result: .catalog(Catalog(lists: [list]), scope: .lists))))
         #expect(try lists.text().contains("list-id")); #expect(try lists.text().contains("Work"))
         let mutation = try Presentation.output(.operation(ExecutionResult(status: .ok, result: .mutation(MutationResult(affectedIDs: [item.id], reminders: [item])))))
         #expect(try mutation.text().contains("Changed 1 record"))

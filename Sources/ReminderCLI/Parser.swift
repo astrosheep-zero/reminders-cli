@@ -4,8 +4,8 @@ import ReminderCore
 import ReminderFacade
 
 enum CLIRequest: Equatable {
-    case help, setup, doctor, mcp
-    case operation(Command, projection: String?)
+    case help, mcp
+    case worker(WorkerRequest)
 }
 struct Invocation: Equatable {
     var request: CLIRequest
@@ -32,14 +32,13 @@ enum CLIParser {
         let json = args.prefix(end).contains("--json"), help = args.prefix(end).contains("--help")
         args = args.enumerated().filter { !($0.offset < end && $0.element == "--json") }.map(\.element)
         if args.isEmpty || args == ["help"] || help { return Invocation(request: .help, json: json) }
-        let special: [String: CLIRequest] = ["setup": .setup, "doctor": .doctor, "mcp": .mcp]
+        let special: [String: CLIRequest] = ["setup": .worker(.setup), "doctor": .worker(.doctor), "mcp": .mcp]
         var name = args.removeFirst()
         if let request = special[name] {
             guard args.isEmpty, name != "mcp" || !json else { throw invalid("\(name) takes no options") }
             return Invocation(request: request, json: json)
         }
-        if ["lists", "groups", "sections", "tags", "smart-lists", "templates"].contains(name),
-           let action = args.first, !action.hasPrefix("--") { name += " " + args.removeFirst() }
+        if let action = args.first, FacadeOperations.definitions.contains(where: { $0.name == name + " " + action }) { name += " " + args.removeFirst() }
         guard let spec = FacadeOperations.definitions.first(where: { $0.name == name }) else { throw invalid("Unknown command: \(name)") }
         var input: [String: JSONValue] = [:], seen: Set<String> = [], positional: [String] = [], literal = false
         var imagePath: String?, imageType: String?
@@ -70,9 +69,7 @@ enum CLIParser {
             guard let imageType, imageType.hasPrefix("image/") else { throw invalid("--image requires --image-type image/TYPE") }
             input["images"] = try Presentation.value([ImageInput(fileName: URL(fileURLWithPath: imagePath).lastPathComponent, contentType: imageType, bytes: readImage(imagePath))])
         } else if imageType != nil { throw invalid("--image-type requires --image") }
-        let prepared = try FacadeOperations.prepare(spec.toolName, arguments: input)
-        guard case .operation(let command) = prepared.request else { return Invocation(request: .doctor, json: json) }
-        return Invocation(request: .operation(command, projection: prepared.projection), json: json)
+        return Invocation(request: .worker(try FacadeOperations.prepare(spec.toolName, arguments: input)), json: json)
     }
     static func invalid(_ message: String) -> Failure { ReminderFacade.invalid(message) }
     static func readImage(_ path: String) throws -> Data {

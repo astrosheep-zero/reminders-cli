@@ -12,7 +12,13 @@ private final class OfflineBridge: RNBridge {
     var receipt: [String] = []
     var introduced: [String] = []
     var patch: [AnyHashable: Any] = [:]
+    var catalogReads: [CatalogScope] = []
+    var sectionLists: [String?] = []
+    var defaultReads = 0
     var tagReads = 0
+    var selectedTagIDs: [String] = []
+    var tagQueries: [([String], [String], Bool)] = []
+    var tagError: Error?
     var reminderListReads = 0
     var queryRows: [[String: Any]] = []
     var visitedIDs: [String] = []
@@ -32,15 +38,24 @@ private final class OfflineBridge: RNBridge {
         return (concealed ? hidden[identifier] : rows[identifier]) as Any? ?? NSNull()
     }
     override func lists() throws -> [[String: Any]] {
-        [["id": "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB", "name": "Inbox", "pinned": false, "groceries": false,
+        catalogReads.append(.lists)
+        return [["id": "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB", "name": "Inbox", "pinned": false, "groceries": false,
           "members": [[String: Any]](), "sections": [[String: Any]](), "sorting": "manual"]]
     }
-    override func defaultList() throws -> String { "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB" }
-    override func groups() throws -> [[String: Any]] { [] }
-    override func smartLists() throws -> [[String: Any]] { [] }
+    override func defaultList() throws -> String { defaultReads += 1; return "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB" }
+    override func groups() throws -> [[String: Any]] { catalogReads.append(.groups); return [] }
+    var smartError: Error?
+    override func smartLists() throws -> [[String: Any]] { catalogReads.append(.smartLists); if let smartError { throw smartError }; return [] }
+    override func sections(inList listID: String?) throws -> [[String: Any]] {
+        catalogReads.append(.sections); sectionLists.append(listID)
+        return [["id": "CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC", "name": "Section", "listID": "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB"]]
+    }
     var templateRows: [[String: Any]] = []
-    override func templates() throws -> [[String: Any]] { templateRows }
-    override func tagCounts() throws -> [[String: Any]] { tagReads += 1; return [["name": "work", "openCount": 3, "totalCount": 5]] }
+    override func templates() throws -> [[String: Any]] { catalogReads.append(.templates); return templateRows }
+    override func tagCounts() throws -> [[String: Any]] { catalogReads.append(.tags); tagReads += 1; return [["name": "work", "openCount": 3, "totalCount": 5]] }
+    override func reminderIDs(withIncludedTags include: [String], excludedTags exclude: [String], matchAll: Bool) throws -> [String] {
+        tagQueries.append((include, exclude, matchAll)); if let tagError { throw tagError }; return selectedTagIDs
+    }
     override func contents(ofSmartList identifier: String, includeCompleted: Bool) throws -> [String] { smartIDs }
     override func searchReminders(criteria: [[String: Any]], limit: Int, offset: Int) throws -> [[String: Any]] {
         searchCriteria = criteria; searchPage = (limit, offset); return queryRows
@@ -99,6 +114,63 @@ struct NativeBackendTests {
         bridge.queryRows = [["id": root]]
         #expect(throws: Failure.self) { try backend(bridge).find(query) }
     }
+    @Test func textScopesAndMatchingMapToNativeCriteria() throws {
+        for (scope, base): (SearchScope?, String) in [(nil, "textualField"), (.all, "textualField"), (.title, "displayName"), (.location, "location")] {
+            for (matching, style): (SearchMatching?, Int) in [(nil, 2), (.exact, 0), (.prefix, 1), (.word, 2)] {
+                let bridge = OfflineBridge(); var q = ReminderQuery(); q.text = "place"; q.scope = scope; q.matching = matching
+                _ = try backend(bridge).find(q)
+                #expect(bridge.searchCriteria.first as NSDictionary? == ["base": base, "arg0": "place", "arg1": style] as NSDictionary)
+            }
+        }
+    }
+    @Test func tagSelectionShortCircuitsEmptyAndPaginatesUnconstrainedNativeIDs() throws {
+        let bridge = OfflineBridge(), backend = backend(bridge)
+        var q = ReminderQuery(); q.tags = ["work", "home"]; q.excludeTags = ["blocked"]
+        #expect(try backend.find(q).isEmpty); #expect(bridge.searchPage == nil); #expect(bridge.readBatches.isEmpty)
+        #expect(bridge.tagQueries[0].0 == ["work", "home"]); #expect(bridge.tagQueries[0].1 == ["blocked"]); #expect(bridge.tagQueries[0].2)
+        bridge.selectedTagIDs = [root, child, list]; bridge.queryRows = [row(child)]
+        q.includeCompleted = true; q.tagMatch = .any; q.offset = 1; q.limit = 1
+        #expect(try backend.find(q).map(\.id) == [child]); #expect(bridge.readBatches == [[child]])
+        #expect(bridge.tagQueries.last?.2 == false); #expect(bridge.searchPage == nil); #expect(bridge.reminderListReads == 0)
+        q.offset = 10
+        #expect(try backend.find(q).isEmpty); #expect(bridge.readBatches.last == [])
+    }
+    @Test func tagSelectionIntersectsOtherCriteriaAndCompletionInNativeSearch() throws {
+        let bridge = OfflineBridge(), backend = backend(bridge); bridge.selectedTagIDs = [root, child]
+        bridge.queryRows = [row(child, title: "Native match")]
+        var defaults = ReminderQuery(); defaults.tags = ["work"]
+        _ = try backend.find(defaults)
+        #expect(bridge.searchCriteria.first as NSDictionary? == ["base": "isCompleted", "arg0": false] as NSDictionary)
+        #expect(bridge.searchCriteria.last?["base"] as? String == "objectID"); #expect(bridge.readBatches.isEmpty)
+        bridge.tagQueries = []
+        var q = ReminderQuery(); q.excludeTags = ["blocked"]; q.text = "needle"; q.scope = .title
+        q.list = list; q.flagged = false; q.offset = 3; q.limit = 2
+        #expect(try backend.find(q).map(\.id) == [child])
+        #expect(bridge.tagQueries.first?.0 == []); #expect(bridge.tagQueries.first?.1 == ["blocked"])
+        #expect(bridge.searchCriteria as NSArray == [
+            ["base": "displayName", "arg0": "needle", "arg1": 2],
+            ["base": "listID", "arg0": ["entityName": "REMList", "uuid": list], "arg1": ["includeForSiri": [:]]],
+            ["base": "isCompleted", "arg0": false], ["base": "isFlagged", "arg0": false],
+            ["base": "objectID", "arg0": [["entityName": "REMReminder", "uuid": root], ["entityName": "REMReminder", "uuid": child]]]
+        ] as NSArray)
+        #expect(bridge.searchPage?.0 == 2); #expect(bridge.searchPage?.1 == 3); #expect(bridge.readBatches.isEmpty)
+        bridge.tagError = Failure(.backend, "Tag selection failed")
+        #expect(throws: Failure.self) { try backend.find(q) }
+        #expect(bridge.reminderListReads == 0)
+    }
+    @Test func eachCatalogFamilyReadsOnlyItsNativeFamily() throws {
+        for scope in CatalogScope.allCases {
+            let bridge = OfflineBridge(), backend = backend(bridge)
+            _ = try backend.catalog([scope], listID: scope == .sections ? list : nil)
+            #expect(Set(bridge.catalogReads) == (scope == .all ? Set(CatalogScope.allCases.filter { $0 != .all }) : [scope]))
+            #expect(bridge.defaultReads == (scope == .all || scope == .lists ? 1 : 0))
+            #expect(bridge.reminderListReads == 0)
+            if scope == .sections { #expect(bridge.sectionLists == [list]) }
+        }
+        let bridge = OfflineBridge(); bridge.smartError = Failure(.unsupported, "Unrepresentable smart filter")
+        #expect(try backend(bridge).catalog([.lists]).lists.count == 1)
+        #expect(throws: Failure.self) { try backend(bridge).catalog([.smartLists]) }
+    }
     @Test func completionCriterionHasThreeStatesAndExplicitCompletedTakesPrecedence() throws {
         let bridge = OfflineBridge(), backend = backend(bridge)
         bridge.queryRows = [row(root, completed: true)]
@@ -126,10 +198,10 @@ struct NativeBackendTests {
     }
     @Test func metadataCatalogNeverHydratesUnrelatedReminderOrTags() throws {
         let bridge = OfflineBridge(), backend = backend(bridge)
-        #expect(try backend.catalog(includeTags: false).tags.isEmpty)
+        #expect(try backend.catalog([.lists]).tags.isEmpty)
         #expect(bridge.tagReads == 0)
         #expect(bridge.reminderListReads == 0)
-        #expect(try backend.catalog(includeTags: true).tags == [Tag(name: "work", openCount: 3, totalCount: 5)])
+        #expect(try backend.catalog([.tags]).tags == [Tag(name: "work", openCount: 3, totalCount: 5)])
         #expect(bridge.tagReads == 1)
         #expect(bridge.reminderListReads == 0)
     }
@@ -137,7 +209,7 @@ struct NativeBackendTests {
         let bridge = OfflineBridge()
         bridge.templateRows = [["id": root, "name": "Custom", "color": ["name": "custom", "hex": "#123456"], "icon": "star"],
             ["id": child, "name": "Blue", "color": ["name": "lightBlue"]], ["id": list, "name": "Plain"]]
-        #expect(try backend(bridge).catalog(includeTags: false).templates == [
+        #expect(try backend(bridge).catalog([.templates]).templates == [
             NamedEntity(id: root, name: "Custom", color: "#123456", icon: "star"),
             NamedEntity(id: child, name: "Blue", color: "light-blue"), NamedEntity(id: list, name: "Plain")])
     }

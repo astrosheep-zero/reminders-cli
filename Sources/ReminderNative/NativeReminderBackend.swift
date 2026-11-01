@@ -85,9 +85,10 @@ public final class NativeReminderBackend: ReminderBackend {
                 _ = try SmartFilters.data(smart); _ = try Translation.color(smart.color)
                 features = ["smart.update", "appearance"]
                 if case .smartList(.create) = command { features.append("smart.create") }
-            case .list(.create(let fields)), .list(.update(_, let fields)):
-                _ = try Translation.listFields(fields); features = ["list.update", "appearance"]
-                if case .list(.create) = command { features.append("list.create") }
+            case .list(.create(let fields)):
+                _ = try Translation.listFields(fields); features = ["list.create", "list.update", "appearance"]
+            case .list(.update(_, let patch, _)):
+                _ = try Translation.color(patch.color); features = ["list.update", "appearance"]
             case .list(.delete): features = ["reminder.list", "list.delete"]
             case .list(.clearCompleted): features = ["reminder.list", "reminder.delete"]
             case .delete: features = ["reminder.delete"]
@@ -105,8 +106,10 @@ public final class NativeReminderBackend: ReminderBackend {
             case .template(.use): features = ["template.use"]
             case .template(.delete): features = ["template.delete"]
             case .tag: features = ["tags.read", "tags", "reminder.update"]
-            case .catalog(true): features = ["tags.read"]
-            case .find(let query): features = [query.smartList == nil ? "reminder.find" : "smart.find"]
+            case .catalog(.all, _), .catalog(.tags, _): features = ["tags.read"]
+            case .find(let query):
+                features = [query.smartList == nil ? "reminder.find" : "smart.find"]
+                if !(query.tags ?? []).isEmpty || !(query.excludeTags ?? []).isEmpty { features.append("tags.read") }
             default: break
             }
             if !features.isEmpty { try checkFeatures(features) }
@@ -152,21 +155,17 @@ public final class NativeReminderBackend: ReminderBackend {
     private func readReminders(listID: String? = nil, identifiers: [String]? = nil) throws -> [Reminder] {
         try store().reminders(inList: listID, identifiers: identifiers).map(Translation.reminder)
     }
-    public func catalog(includeTags: Bool) throws -> Catalog {
+    public func catalog(_ scopes: Set<CatalogScope>, listID: String? = nil) throws -> Catalog {
         try serialized {
-            let native = try store(), rawLists = try native.lists(), defaultID = try native.defaultList()
-            let lists = try rawLists.map { try Translation.list($0, defaultID: defaultID) }
-            let sections: [Section] = try rawLists.flatMap { raw in
-                let entries: [[String: Any]] = try Translation.value(raw, "sections")
-                return try entries.map { try Section(id: Translation.value($0, "id"), name: Translation.value($0, "name"), listID: Translation.value($0, "listID"), position: Translation.position($0["position"] as? [String: Any])) }
-            }
-            // Explicit metadata projections do not enumerate reminders at all.
-            // A requested tag catalog scans only hashtags/completed flags in ObjC.
-            let tags = includeTags ? try native.tagCounts().map { try Tag(name: Translation.value($0, "name"),
-                openCount: Translation.value($0, "openCount"), totalCount: Translation.value($0, "totalCount")) } : []
-            return try Catalog(lists: lists, groups: native.groups().map(named), sections: sections,
-                tags: tags,
-                smartLists: native.smartLists().map(SmartFilters.decode), templates: native.templates().map(named))
+            let native = try store(), scopes = scopes.contains(.all) ? Set(CatalogScope.allCases) : scopes
+            let defaultID = scopes.contains(.lists) ? try native.defaultList() : ""
+            return try Catalog(lists: scopes.contains(.lists) ? native.lists().map { try Translation.list($0, defaultID: defaultID) } : [],
+                groups: scopes.contains(.groups) ? native.groups().map(named) : [],
+                sections: scopes.contains(.sections) ? native.sections(inList: listID).map {
+                    try Section(id: Translation.value($0, "id"), name: Translation.value($0, "name"), listID: Translation.value($0, "listID"), position: Translation.position($0["position"] as? [String: Any])) } : [],
+                tags: scopes.contains(.tags) ? native.tagCounts().map { try Tag(name: Translation.value($0, "name"), openCount: Translation.value($0, "openCount"), totalCount: Translation.value($0, "totalCount")) } : [],
+                smartLists: scopes.contains(.smartLists) ? native.smartLists().map(SmartFilters.decode) : [],
+                templates: scopes.contains(.templates) ? native.templates().map(named) : [])
         }
     }
     private func named(_ raw: [String: Any]) throws -> NamedEntity {
@@ -190,7 +189,9 @@ public final class NativeReminderBackend: ReminderBackend {
             if let text = query.text {
                 let matching: Int
                 switch query.matching ?? .word { case .exact: matching = 0; case .prefix: matching = 1; case .word: matching = 2 }
-                criteria.append(["base": "textualField", "arg0": text, "arg1": matching])
+                let base: String
+                switch query.scope ?? .all { case .all: base = "textualField"; case .title: base = "displayName"; case .location: base = "location" }
+                criteria.append(["base": base, "arg0": text, "arg1": matching])
             }
             if let list = query.list {
                 criteria.append(["base": "listID", "arg0": ["entityName": "REMList", "uuid": list], "arg1": ["includeForSiri": [:]]])
@@ -199,6 +200,12 @@ public final class NativeReminderBackend: ReminderBackend {
                                   ("isFlagged", query.flagged), ("isUrgentForCurrentUser", query.urgent),
                                   ("isRecurrent", query.repeating), ("hasLocation", query.hasLocation), ("hasDueDate", query.hasDueDate)] {
                 if let value { criteria.append(["base": name, "arg0": value]) }
+            }
+            if !(query.tags ?? []).isEmpty || !(query.excludeTags ?? []).isEmpty {
+                let ids = try store().reminderIDs(withIncludedTags: query.tags ?? [], excludedTags: query.excludeTags ?? [], matchAll: query.tagMatch != .any)
+                guard !ids.isEmpty else { return [] }
+                if criteria.isEmpty { return try readReminders(identifiers: Array(ids.dropFirst(query.offset).prefix(query.limit))) }
+                criteria.append(["base": "objectID", "arg0": ids.map { ["entityName": "REMReminder", "uuid": $0] }])
             }
             return try store().searchReminders(criteria: criteria, limit: query.limit, offset: query.offset).map(Translation.reminder)
         }
@@ -323,25 +330,16 @@ public final class NativeReminderBackend: ReminderBackend {
             return MutationResult(affectedIDs: [id] + reminderIDs, reminders: try readReminders(identifiers: reminderIDs), lists: [try Translation.list(raw, defaultID: defaultID)])
         }
     }
-    public func list(_ action: ListAction) throws -> MutationResult {
+    public func createList(_ fields: ListFields) throws -> MutationResult {
+        try serialized { try listReceipt(store().createList(fields.name, changes: Translation.listFields(fields))) }
+    }
+    public func updateList(id: String, fields: ListFields) throws -> MutationResult {
+        try serialized { try store().updateList(id, changes: Translation.listFields(fields)); return try listReceipt(id) }
+    }
+    public func deleteList(id: String) throws -> MutationResult {
         try serialized {
-            let native = try store()
-            switch action {
-            case .create(let fields): return try listReceipt(native.createList(fields.name, changes: Translation.listFields(fields)))
-            case .update(let id, let fields): try native.updateList(id, changes: Translation.listFields(fields)); return try listReceipt(id)
-            case .delete(let id, let confirmed):
-                guard confirmed else { throw Failure(.invalidInput, "List deletion needs confirmation") }
-                let affected = try readReminders(listID: id).map(\.id)
-                try native.deleteList(id); return MutationResult(affectedIDs: [id] + affected)
-            case .clearCompleted(let id, let confirmed):
-                guard confirmed else { throw Failure(.invalidInput, "Clear-completed needs confirmation") }
-                // Operations has already journaled the same expanded selection.
-                // A parent and every child enter one request/save, never one save per row.
-                let all = try readReminders(listID: id)
-                var selected = Set(all.filter(\.fields.completed).map(\.id))
-                for item in all where selected.contains(item.id) { selected.formUnion(item.childIDs) }
-                return try deleteReminders(ids: selected.sorted())
-            }
+            let affected = try readReminders(listID: id).map(\.id)
+            try store().deleteList(id); return MutationResult(affectedIDs: [id] + affected)
         }
     }
     public func group(_ action: GroupAction) throws -> MutationResult {

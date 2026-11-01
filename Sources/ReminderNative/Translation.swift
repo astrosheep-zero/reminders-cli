@@ -129,15 +129,17 @@ enum Translation {
         }, childIDs: value(raw, "childIDs"), creationDate: raw["creationDate"] as? Date,
             lastModifiedDate: raw["lastModifiedDate"] as? Date, completionDate: raw["completionDate"] as? Date)
     }
-    /// Only creation starts from full fields. Updates translate sparse Change
-    /// values below, including explicit set-to-same intent.
-    static func creationFields(_ fields: ReminderFields) throws -> [String: Any] {
-        // Core omits nil fields. Lift exactly the encoded fields into sparse sets,
-        // sharing patch translation rather than maintaining a second field-by-field copy.
-        let object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(fields)) as! [String: Any]
-        let sets = object.mapValues { ["set": ["_0": $0]] }
-        let input = try JSONDecoder().decode(ReminderPatch.self, from: JSONSerialization.data(withJSONObject: sets))
-        return try patch(input)
+    /// Creation shares sparse translation without depending on Codable's associated-value layout.
+    static func creationFields(_ f: ReminderFields) throws -> [String: Any] {
+        func set<T>(_ value: T?) -> Change<T> { value.map(Change.set) ?? .absent }
+        var p = ReminderPatch()
+        p.title = .set(f.title); p.listID = .set(f.listID); p.notes = set(f.notes)
+        p.due = set(f.due); p.start = set(f.start); p.recurrence = set(f.recurrence)
+        p.earlyAlerts = .set(f.earlyAlerts); p.location = set(f.location); p.contact = set(f.contact); p.url = set(f.url)
+        p.priority = .set(f.priority); p.flagged = .set(f.flagged); p.urgent = .set(f.urgent); p.completed = .set(f.completed)
+        p.tags = .set(f.tags); p.parentID = set(f.parentID); p.sectionID = set(f.sectionID)
+        p.position = set(f.position); p.assigneeID = set(f.assigneeID)
+        return try patch(p)
     }
     static func patch(_ patch: ReminderPatch) throws -> [String: Any] {
         var result: [String: Any] = [:]

@@ -2,7 +2,7 @@ import Foundation
 
 public enum ListAction: Codable, Sendable, Equatable {
     case create(ListFields)
-    case update(String, ListFields)
+    case update(String, ListPatch, clear: [ListClear] = [])
     case clearCompleted(String, confirmed: Bool)
     case delete(String, confirmed: Bool)
 }
@@ -35,8 +35,7 @@ public enum Command: Codable, Sendable, Equatable {
     case delete(id: String, version: String)
     case restore(id: String, list: String?)
     case deleted
-    /// Metadata-only projections intentionally omit tags; requested tags include truthful counts.
-    case catalog(includeTags: Bool)
+    case catalog(CatalogScope, list: String? = nil)
     case image(reminderID: String, imageID: String)
     case list(ListAction)
     case group(GroupAction)
@@ -85,7 +84,7 @@ public struct DeletedResult: Codable, Sendable, Equatable {
     public init(entries: [DeletionEntry]) { self.scope = .toolOnly; self.entries = entries }
 }
 public enum OperationResult: Codable, Sendable, Equatable {
-    case reminders([Reminder]), catalog(Catalog), mutation(MutationResult), deleted(DeletedResult), image(ImageInput)
+    case reminders([Reminder]), catalog(Catalog, scope: CatalogScope = .all), mutation(MutationResult), deleted(DeletedResult), image(ImageInput)
 }
 public struct ExecutionResult: Codable, Sendable, Equatable {
     public enum Status: String, Codable, Sendable { case ok, failed, unknown }
@@ -104,7 +103,7 @@ public enum RestorableState: String, Codable, Sendable { case active, restorable
 public protocol ReminderBackend: AnyObject {
     /// Must reject unsupported commands/fields BEFORE mutationStarted. Never returns fabricated empty success.
     func checkSupport(for command: Command) throws
-    func catalog(includeTags: Bool) throws -> Catalog
+    func catalog(_ scopes: Set<CatalogScope>, listID: String?) throws -> Catalog
     func find(_ query: ReminderQuery) throws -> [Reminder]
     /// Exhaustive active reminders, including completed and children; nil selects all lists. Never silently truncate.
     func reminders(listID: String?) throws -> [Reminder]
@@ -120,7 +119,9 @@ public protocol ReminderBackend: AnyObject {
     func deleteReminders(ids: [String]) throws -> MutationResult
     /// Restores root + saved children + any additional native children using the saved parent evidence.
     func restoreReminder(id: String, listID: String, knownChildIDs: [String], parentID: String?) throws -> MutationResult
-    func list(_ action: ListAction) throws -> MutationResult
+    func createList(_ fields: ListFields) throws -> MutationResult
+    func updateList(id: String, fields: ListFields) throws -> MutationResult
+    func deleteList(id: String) throws -> MutationResult
     func group(_ action: GroupAction) throws -> MutationResult
     func section(_ action: SectionAction) throws -> MutationResult
     func tag(_ action: TagAction) throws -> MutationResult
@@ -131,7 +132,8 @@ public protocol ReminderBackend: AnyObject {
 /// Defaults fail closed. Override checkSupport along with the methods actually supported.
 public extension ReminderBackend {
     func checkSupport(for command: Command) throws { throw Failure(.unsupported, "Backend does not support this command") }
-    func catalog(includeTags: Bool) throws -> Catalog { throw Failure(.unsupported, "Catalog unavailable") }
+    func catalog(_ scopes: Set<CatalogScope>) throws -> Catalog { try catalog(scopes, listID: nil) }
+    func catalog(_ scopes: Set<CatalogScope>, listID: String?) throws -> Catalog { throw Failure(.unsupported, "Catalog unavailable") }
     func find(_ query: ReminderQuery) throws -> [Reminder] { throw Failure(.unsupported, "Find unavailable") }
     func reminders(listID: String?) throws -> [Reminder] { throw Failure(.unsupported, "Exhaustive reminder read unavailable") }
     func reminders(matchingTitle: String) throws -> [Reminder] { throw Failure(.unsupported, "Title lookup unavailable") }
@@ -146,7 +148,9 @@ public extension ReminderBackend {
     func restoreReminder(id: String, listID: String, knownChildIDs: [String], parentID: String?) throws -> MutationResult {
         throw Failure(.unsupported, "Restore unavailable")
     }
-    func list(_ action: ListAction) throws -> MutationResult { throw Failure(.unsupported, "List mutation unavailable") }
+    func createList(_ fields: ListFields) throws -> MutationResult { throw Failure(.unsupported, "List creation unavailable") }
+    func updateList(id: String, fields: ListFields) throws -> MutationResult { throw Failure(.unsupported, "List update unavailable") }
+    func deleteList(id: String) throws -> MutationResult { throw Failure(.unsupported, "List deletion unavailable") }
     func group(_ action: GroupAction) throws -> MutationResult { throw Failure(.unsupported, "Group mutation unavailable") }
     func section(_ action: SectionAction) throws -> MutationResult { throw Failure(.unsupported, "Section mutation unavailable") }
     func tag(_ action: TagAction) throws -> MutationResult { throw Failure(.unsupported, "Tag mutation unavailable") }

@@ -25,7 +25,9 @@ FOUNDATION_EXPORT BOOL RNPreflight(NSArray<NSString *> *features, NSError **erro
 @property (nonatomic, readonly, copy) NSArray<NSString *> *lastIntroducedReminderIDs;
 - (nullable NSArray<NSDictionary<NSString *, id> *> *)listsWithError:(NSError **)error;
 - (nullable NSArray<NSDictionary<NSString *, id> *> *)groupsWithError:(NSError **)error;
+- (nullable NSArray<NSDictionary<NSString *, id> *> *)sectionsInList:(nullable NSString *)listID error:(NSError **)error NS_SWIFT_NAME(sections(inList:));
 - (nullable NSArray<NSDictionary<NSString *, id> *> *)tagCountsWithError:(NSError **)error;
+- (nullable NSArray<NSString *> *)reminderIDsWithIncludedTags:(NSArray<NSString *> *)include excludedTags:(NSArray<NSString *> *)exclude matchAll:(BOOL)matchAll error:(NSError **)error;
 - (nullable NSString *)defaultListWithError:(NSError **)error;
 - (BOOL)validateRecoveryForList:(NSString *)listID error:(NSError **)error;
 - (BOOL)validateSmartListCreationWithError:(NSError **)error;

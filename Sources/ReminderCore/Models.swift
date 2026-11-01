@@ -220,9 +220,14 @@ public struct ReminderDraft: Codable, Sendable, Equatable {
     public init(fields: ReminderFields, images: [ImageInput] = []) { self.fields = fields; self.images = images }
 }
 public enum SearchMatching: String, Codable, Sendable, Equatable { case exact, prefix, word }
+public enum SearchScope: String, Codable, Sendable { case all, title, location }
 public struct ReminderQuery: Codable, Sendable, Equatable {
     public var text: String?
     public var matching: SearchMatching?
+    public var scope: SearchScope?
+    public var tags: [String]?
+    public var excludeTags: [String]?
+    public var tagMatch: MatchMode?
     public var list: String?
     public var smartList: String?
     public var includeCompleted: Bool = false
@@ -260,6 +265,33 @@ public struct ListFields: Codable, Sendable, Equatable {
                 pinned: Bool = false, kind: ListKind = .standard, sort: ListSort = .manual, position: Position? = nil) {
         self.name = name; self.color = color; self.icon = icon; self.groupID = groupID
         self.pinned = pinned; self.kind = kind; self.sort = sort; self.position = position
+    }
+}
+public enum ListClear: String, Codable, Sendable { case color, icon, groupID }
+/// Omitted fields are preserved. Position is a write-only ordering directive, not stored state.
+public struct ListPatch: Codable, Sendable, Equatable {
+    public var name: String?, color: String?, icon: String?, groupID: String?
+    public var pinned: Bool?
+    public var kind: ListKind?
+    public var sort: ListSort?
+    public var position: Position?
+    public init() {}
+    public func validate(clear: [ListClear]) throws {
+        guard self != ListPatch() || !clear.isEmpty else { throw Failure(.invalidInput, "List edit requires a change") }
+        let optional: [ListClear: String] = [.color: color, .icon: icon, .groupID: groupID].compactMapValues { $0 }
+        guard Set(clear).count == clear.count, Set(clear).isDisjoint(with: optional.keys) else {
+            throw Failure(.invalidInput, "Duplicate or conflicting fields/clear")
+        }
+    }
+    public func applying(to old: ListFields, clear: [ListClear] = []) throws -> ListFields {
+        try validate(clear: clear)
+        var f = old
+        f.name = name ?? f.name; f.color = color ?? f.color; f.icon = icon ?? f.icon; f.groupID = groupID ?? f.groupID
+        f.pinned = pinned ?? f.pinned; f.kind = kind ?? f.kind; f.sort = sort ?? f.sort; f.position = position
+        for field in clear {
+            switch field { case .color: f.color = nil; case .icon: f.icon = nil; case .groupID: f.groupID = nil }
+        }
+        return f
     }
 }
 public struct ReminderList: Codable, Sendable, Equatable {
@@ -325,6 +357,7 @@ public struct SmartList: Codable, Sendable, Equatable {
         self.id = id; self.name = name; self.color = color; self.icon = icon; self.match = match; self.filters = filters
     }
 }
+public enum CatalogScope: String, Codable, Sendable, CaseIterable { case all = "catalog", lists, groups, sections, tags, smartLists, templates }
 public struct Catalog: Codable, Sendable, Equatable {
     public var lists: [ReminderList]
     public var groups: [NamedEntity]

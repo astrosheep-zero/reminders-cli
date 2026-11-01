@@ -39,7 +39,8 @@ public enum WorkerResponse: Codable, Sendable {
             guard !(mutationStarted && output.status == .failed) else { throw invalid("Definite failure contradicts mutation marker") }
             guard output.status == .ok else { return }
             switch (command, output.result) {
-            case (.find, .reminders), (.show, .reminders), (.catalog, .catalog), (.deleted, .deleted), (.image, .image): return
+            case (.catalog(let requested, _), .catalog(_, let returned)) where requested == returned: return
+            case (.find, .reminders), (.show, .reminders), (.deleted, .deleted), (.image, .image): return
             case (.create, .mutation), (.update, .mutation), (.complete, .mutation), (.delete, .mutation),
                  (.restore, .mutation), (.list, .mutation), (.group, .mutation), (.section, .mutation),
                  (.tag, .mutation), (.smartList, .mutation), (.template, .mutation): return
@@ -85,7 +86,7 @@ public enum Presentation {
     static func reminder(_ input: Reminder) throws -> JSONValue {
         try mapped(input, key: "fields", schema: Shapes.fields, extra: ["version": .string(input.version())])
     }
-    public static func output(_ response: WorkerResponse, projection: String? = nil) throws -> OutputEnvelope {
+    public static func output(_ response: WorkerResponse) throws -> OutputEnvelope {
         switch response {
         case .diagnostics(let diagnostic):
             return OutputEnvelope(status: .ok, result: try body("diagnostics", diagnostic), warnings: diagnostic.notes)
@@ -106,7 +107,7 @@ public enum Presentation {
                     data["reminders"] = .array(try mutation.reminders.map(reminder))
                     data["lists"] = .array(try mutation.lists.map { try mapped($0, key: "fields", schema: Shapes.list) })
                     return .object(["kind": .string("mutation"), "mutation": .object(data)])
-                case .catalog(let catalog): return try catalogOutput(catalog, projection: projection)
+                case .catalog(let catalog, let scope): return try catalogOutput(catalog, scope: scope)
                 case .deleted(let deleted):
                     // scope is explicit even if the Core Codable representation changes.
                     return .object(["kind": .string("deleted"), "scope": .string("toolOnly"), "entries": try value(deleted.entries)])
@@ -120,37 +121,23 @@ public enum Presentation {
             return OutputEnvelope(status: response.status, result: result, error: response.error, warnings: warnings)
         }
     }
-    private static func catalogOutput(_ original: Catalog, projection: String?) throws -> JSONValue {
-        var catalog = original
-        let pieces = projection?.split(separator: ":", maxSplits: 1).map(String.init) ?? []
-        if pieces.first == "sections", pieces.count == 2 {
-            let input = pieces[1]
-            let ids = catalog.lists.filter { $0.id.caseInsensitiveCompare(input) == .orderedSame }
-            let matches = ids.isEmpty ? catalog.lists.filter { $0.fields.name == input } : ids
-            guard matches.count == 1 else { throw Failure(matches.isEmpty ? .notFound : .ambiguous, "No unique list: \(input)") }
-            catalog.sections = catalog.sections.filter { $0.listID.caseInsensitiveCompare(matches[0].id) == .orderedSame }
-        }
+    private static func catalogOutput(_ catalog: Catalog, scope: CatalogScope) throws -> JSONValue {
         var result = try JSONValue.properties(catalog)
         result["lists"] = .array(try catalog.lists.map { try mapped($0, key: "fields", schema: Shapes.list) })
         result["sections"] = .array(try catalog.sections.map { try mapped($0, key: "position", schema: Shapes.position) })
         result["smartLists"] = .array(try catalog.smartLists.map { try Shapes.smart.convert(value($0), outward: true) })
-        guard let family = pieces.first else { return .object(["kind": .string("catalog"), "catalog": .object(result)]) }
-        let key = family == "smart-lists" ? "smartLists" : family
-        guard let records = result[key] else { throw invalid("Unknown catalog projection") }
-        return .object(["kind": .string(key), key: records])
+        return scope == .all ? .object(["kind": .string("catalog"), "catalog": .object(result)])
+            : .object(["kind": .string(scope.rawValue), scope.rawValue: result[scope.rawValue]!])
     }
 
     public static func transportOutcome(_ outcome: RuntimeReply.Outcome, mutationStarted: Bool = false,
-                                 request: WorkerRequest? = nil, projection: String? = nil) -> OutputEnvelope {
+                                 request: WorkerRequest? = nil) -> OutputEnvelope {
         switch outcome {
         case .result(let data):
             do {
                 let response = try JSONDecoder().decode(WorkerResponse.self, from: data)
                 if let request { try response.validate(for: request, mutationStarted: mutationStarted) }
-                return try self.output(response, projection: projection)
-            }
-            catch let failure as Failure where failure.code == .notFound || failure.code == .ambiguous {
-                return .failure(failure)
+                return try self.output(response)
             } catch {
                 let message = "Worker's final typed result could not be decoded or validated: \(error)"
                 return mutationStarted ? .unknown(message) : .failure(Failure(.backend, message))
@@ -167,8 +154,8 @@ public enum Presentation {
         }
     }
 
-    public static func transport(_ reply: RuntimeReply, request: WorkerRequest, projection: String? = nil) -> OutputEnvelope {
-        var result = transportOutcome(reply.outcome, mutationStarted: reply.mutationStarted, request: request, projection: projection)
+    public static func transport(_ reply: RuntimeReply, request: WorkerRequest) -> OutputEnvelope {
+        var result = transportOutcome(reply.outcome, mutationStarted: reply.mutationStarted, request: request)
         if let issue = reply.issue {
             if case .result = reply.outcome { result.warnings.append("A final response was received, but transport also reported: \(issue)") }
             else { result.warnings.append("Worker transport reported: \(issue)") }

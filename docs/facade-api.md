@@ -5,10 +5,10 @@ CLI and MCP are peer frontends over `ReminderFacade`. MCP uses the official `mod
 ## Boundaries
 
 - `FacadeOperations.definitions` is the single registry for operation names, CLI option adaptation, summaries, input schemas and typed dispatch closures. `Schema` generates discovery schemas and validates/converts the same shapes at invocation time.
-- `FacadeOperations.prepare(_:arguments:)` returns a typed `PreparedOperation` (`WorkerRequest` plus an optional catalog projection). Unknown operations, unknown/nested fields, wrong primitive types, nulls, missing arguments and false required confirmations refuse before Runtime dispatch.
-- `RemindersFacade.call(_:arguments:)` is the cancellable async entry. The CLI's blocking `execute(_:projection:cancellation:)` shares the same serial dispatch queue, Runtime execution and output mapping. Do not call the blocking entry from an SDK handler.
+- `FacadeOperations.prepare(_:arguments:)` returns a typed `WorkerRequest` directly. There is no `PreparedOperation` wrapper or out-of-band projection string; catalog scope and optional list reference travel in the typed Core command/result. Unknown operations, unknown/nested fields, wrong primitive types, nulls, missing arguments and false required confirmations refuse before Runtime dispatch.
+- `RemindersFacade.call(_:arguments:)` is the cancellable async entry. The CLI's blocking `execute(_:cancellation:)` shares the same serial dispatch queue, Runtime execution and output mapping. Do not call the blocking entry from an SDK handler.
 - `WorkerComposition` is the worker-side boundary: it alone composes typed Core Operations with the injected backend. Production injects Native only in the same executable's internal `--worker` branch. Core remains independent of the SDK and Runtime remains independent of Core.
-- Worker `Command`, `Change`, `WorkerRequest` and `WorkerResponse` Codable enum representations are internal transport details. They are not MCP/CLI JSON syntax. Native's creation-to-patch lift also uses this private typed representation; no generic native RPC or selector input is exposed.
+- Worker `Command`, `Change`, `WorkerRequest` and `WorkerResponse` Codable enum representations are internal transport details. They are not MCP/CLI JSON syntax. Native's creation-to-patch mapping constructs typed `ReminderPatch` values directly, without JSON roundtrips or dependence on synthesized `_0` layout; no generic native RPC or selector input is exposed.
 
 Each worker still handles exactly one request. Build identity checks, required disclaimed spawn, bounded pipes/deadlines, version checks, journal-before-delete, native preflight and request-owned receipts remain in force. No direct-Native fallback or automatic write retry exists.
 
@@ -83,9 +83,9 @@ Date filters also model `none`. Relative ranges require nonnegative counts, exac
 | `delete` | `id`, `version`; includes known children |
 | `restore` | `id`, optional `list`; saved destination required if list is omitted |
 | `image` | `id`, `imageID`; explicit byte read |
-| `sections` | Optional `list` projection filter |
+| `sections` | Optional `list` ID/exact name, resolved in Core before a list-scoped native section read |
 | Container add | `name`; sections/templates also require `list`; lists allow `fields`; smart lists require `definition`; templates allow `includeCompleted` |
-| List edit | `id`, full `fields` (`name`, `pinned`, `kind`, `sort` required) |
+| List edit | `id`, optional sparse `fields`, optional `clear:["color","icon","groupID"]`; at least one change |
 | Smart-list edit | `id`, full `definition` (`id`, `name`, `match`, `filters` required) |
 | Group/tag rename | `id`, `name` (tag `id` is a name resolved by native label matching) |
 | Section rename/move | `id`, `list`, plus `name` or tagged `position` respectively |
@@ -93,11 +93,11 @@ Date filters also model `none`. Relative ranges require nonnegative counts, exac
 | Template use | `id`, optional `name` for the new list |
 | Other listings / `catalog` / `doctor` / `deleted` | Empty object |
 
-Reminder `fields`/`set` keys: `title`, `listID`, `notes`, `due`, `start`, `recurrence`, `earlyAlerts`, `location`, `contact`, `url`, `priority`, `flagged`, `urgent`, `completed`, `tags`, `parentID`, `sectionID`, `position`, `assigneeID`. Priority is `none/low/medium/high`; flags are booleans and tags are string arrays. Creation fields overlay Core defaults but cannot change the positional title or conflict with an explicitly supplied top-level `list`. If top-level `list` is omitted, `fields.listID` is allowed; an empty listID passes unchanged to Core for parent-list inheritance or unique-default selection. Edit sets preserve false/empty string/empty array; `clear` is an array of field names, disjoint from `set`. Missing fields remain absent. List edits are full replacements, except omitted position is a write-only no-ordering directive, not an erase request.
+Reminder `fields`/`set` keys: `title`, `listID`, `notes`, `due`, `start`, `recurrence`, `earlyAlerts`, `location`, `contact`, `url`, `priority`, `flagged`, `urgent`, `completed`, `tags`, `parentID`, `sectionID`, `position`, `assigneeID`. Priority is `none/low/medium/high`; flags are booleans and tags are string arrays. Creation fields overlay Core defaults but cannot change the positional title or conflict with an explicitly supplied top-level `list`. If top-level `list` is omitted, `fields.listID` is allowed; an empty listID passes unchanged to Core for parent-list inheritance or unique-default selection. Edit sets preserve false/empty string/empty array; `clear` is an array of field names, disjoint from `set`. Missing fields remain absent. List edits merge supplied fields over the current list in Core: omitted color/icon/group/pin/kind/sort/name remain unchanged, false is a real update, and only explicit `clear` removes optional color/icon/groupID. Duplicate or conflicting fields/clear, nulls and empty edits fail. Position omission is always a write-only no-ordering directive, never replayed from an old snapshot. Core validates the merged fields and resolves grouping/neighbor names before entering the backend; this is optimistic read/merge/save, not cross-device CAS.
 
-Query keys: `text`, `matching` (`exact`, `prefix`, `word`), `list`, `smartList`, `includeCompleted`, `completed`, `flagged`, `urgent`, `repeating`, `hasLocation`, `hasDueDate`, `limit`, `offset`. Matching requires nonblank text and defaults to `word`. For ordinary queries, explicit `completed:true/false` overrides `includeCompleted` and selects only completed/incomplete reminders; with `completed` omitted, `includeCompleted:true` selects all and false/default selects incomplete. Smart-list mode rejects `completed` and other criteria, but allows `includeCompleted`, limit and offset. Default limit is 100, offset 0. Criteria are matched and paged by native search in native order. Smart-list paging slices native IDs in returned order; neither mode promises a stable snapshot across requests.
+Query keys: `text`, `matching` (`exact`, `prefix`, `word`), `scope` (`all`, `title`, `location`), `tags`, `excludeTags`, `tagMatch` (`all`, `any`), `list`, `smartList`, `includeCompleted`, `completed`, `flagged`, `urgent`, `repeating`, `hasLocation`, `hasDueDate`, `limit`, `offset`. Matching/scope require nonblank text and default to `word`/`all`; scope maps to native textualField/displayName/location. Tags/excludeTags are label arrays (no #/whitespace/NUL), omitted/empty arrays add no filtering, included tags default to all-of, and tagMatch requires nonempty included tags. Native hashtag include/exclude selection runs first: empty IDs return []; with criteria the IDs become an objectID criterion; unconstrained tag reads (`includeCompleted:true`) slice the IDs before batch hydration. Default incomplete-only and explicit completed constraints remain native search criteria, not local filters. Unverified optional-date criterion encodings are not exposed. For ordinary queries, explicit `completed:true/false` overrides `includeCompleted` and selects only completed/incomplete reminders; with `completed` omitted, `includeCompleted:true` selects all and false/default selects incomplete. Smart-list mode rejects `completed` and other criteria, but allows `includeCompleted`, limit and offset. Default limit is 100, offset 0. Criteria are matched and paged by native search in native order. Smart-list paging slices native IDs in returned order; neither mode promises a stable snapshot across requests.
 
-List fields: `name`, `color`, `icon`, `groupID`, `pinned`, `kind` (`standard/groceries`), `sort` (`manual/due/creation/priority/title`), `position`. Smart definitions: `id`, `name`, optional `color`/`icon`, `match` (`all/any`), `filters`. Creation defaults are retained for omitted fields. Full replacements omit optional fields to clear them, not null.
+List fields: `name`, `color`, `icon`, `groupID`, `pinned`, `kind` (`standard/groceries`), `sort` (`manual/due/creation/priority/title`), `position`. Smart definitions: `id`, `name`, optional `color`/`icon`, `match` (`all/any`), `filters`. Creation defaults are retained for omitted fields. List edits preserve omissions and use explicit clear; only smart-list full replacements omit optional fields to clear them. Neither accepts null as a clearing instruction.
 
 Images are `{fileName, contentType, bytes}` with base64 `bytes`; MCP never reads caller-supplied filesystem paths. CLI `--image` reads a bounded regular file in the frontend, converts it to exactly this payload and drops the original path. Runtime requests/results are capped at 16 MiB before MCP wrapping; JSON/base64 overhead reduces usable attachment bytes. Ordinary reads return image metadata only. Explicit image read still has the separately recorded native permission limitation (`NSCocoaErrorDomain/257`); this revision neither supplies an unverified authorization mechanism nor claims it repaired, and does not prescribe Full Disk Access as a fix.
 
@@ -107,9 +107,24 @@ Examples of `tools/call` arguments:
 {"name":"add","arguments":{"title":"Buy fish","list":"Inbox","fields":{"due":{"kind":"date","value":{"year":2030,"month":2,"day":3}}}}}
 {"name":"edit","arguments":{"id":"REMINDER_ID","version":"VERSION","set":{"flagged":false,"notes":""},"clear":["due"]}}
 {"name":"sections_move","arguments":{"id":"SECTION_ID","list":"LIST_ID","position":{"kind":"after","value":"OTHER_SECTION_ID"}}}
+{"name":"lists_edit","arguments":{"id":"LIST_ID","fields":{"name":"Renamed"}}}
+{"name":"lists_edit","arguments":{"id":"LIST_ID","fields":{"pinned":false},"clear":["icon","groupID"]}}
+{"name":"find","arguments":{"query":{"text":"fish","scope":"title","tags":["work","home"],"excludeTags":["blocked"],"tagMatch":"any"}}}
 ```
 
 ## Results, cancellation and uncertainty
+
+Catalog listings read only the selected native family. `sections(list:)` resolves the list in Core; the facade never splits colon-delimited strings. Scope is validated against the worker's typed result, and the public result shape is unchanged:
+
+```json
+{"kind":"catalog","catalog":{"lists":[],"groups":[],"sections":[],"tags":[],"smartLists":[],"templates":[]}}
+{"kind":"lists","lists":[]}
+{"kind":"groups","groups":[]}
+{"kind":"sections","sections":[]}
+{"kind":"tags","tags":[]}
+{"kind":"smartLists","smartLists":[]}
+{"kind":"templates","templates":[]}
+```
 
 `CallTool.Result.structuredContent` is the same stable envelope as CLI `--json`. A text content item contains the same JSON for clients without structured-content support. `isError` is true for both failed and unknown outcomes.
 

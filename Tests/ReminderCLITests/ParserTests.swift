@@ -5,7 +5,7 @@ import ReminderCore
 
 struct ParserTests {
     func command(_ args: [String]) throws -> Command {
-        guard case .operation(let command, _) = try CLIParser.parse(args).request else {
+        guard case .worker(.operation(let command)) = try CLIParser.parse(args).request else {
             throw CLIParser.invalid("Test expected operation")
         }
         return command
@@ -36,9 +36,10 @@ struct ParserTests {
         #expect(patch.title == .absent)
     }
     @Test func queryAndSmartFilters() throws {
-        guard case .find(let query) = try command(["find", "--query-json", #"{"text":"coffee","matching":"prefix","includeCompleted":true,"completed":true,"flagged":false,"repeating":true,"hasLocation":true,"hasDueDate":false,"offset":4}"#, "--limit", "12"]) else { throw CLIParser.invalid("Expected find") }
+        guard case .find(let query) = try command(["find", "--query-json", #"{"text":"coffee","matching":"prefix","scope":"title","tags":["work","home"],"excludeTags":["blocked"],"tagMatch":"any","includeCompleted":true,"completed":true,"flagged":false,"repeating":true,"hasLocation":true,"hasDueDate":false,"offset":4}"#, "--limit", "12"]) else { throw CLIParser.invalid("Expected find") }
         #expect(query.limit == 12); #expect(query.flagged == false); #expect(query.includeCompleted); #expect(query.completed == true)
         #expect(query.matching == .prefix); #expect(query.offset == 4); #expect(query.hasDueDate == false)
+        #expect(query.scope == .title); #expect(query.tags == ["work", "home"]); #expect(query.excludeTags == ["blocked"]); #expect(query.tagMatch == .any)
         let filters: [SmartFilter] = [.tags(["work"], match: .all), .date(.relative(past: 0, future: 7, unit: .days)), .priorities([.high]), .flagged(true), .lists(["L"]), .location(.gettingInCar)]
         let text = #"[{"kind":"tags","value":["work"],"match":"all"},{"kind":"date","value":{"kind":"relative","past":0,"future":7,"unit":"days"}},{"kind":"priorities","value":["high"]},{"kind":"flagged","value":true},{"kind":"lists","value":["L"]},{"kind":"location","value":"gettingInCar"}]"#
         guard case .smartList(.create(let smart)) = try command(["smart-lists", "add", "Today", "--definition-json", "{\"filters\":\(text)}"]) else { throw CLIParser.invalid("Expected smart list") }
@@ -48,6 +49,7 @@ struct ParserTests {
         let samples: [[String]] = [
             ["lists"], ["lists", "add", "Inbox"],
             ["lists", "edit", "L", "--fields-json", #"{"name":"New","pinned":true,"kind":"groceries","sort":"title"}"#],
+            ["lists", "edit", "L", "--fields-json", #"{"name":"Renamed"}"#], ["lists", "edit", "L", "--clear", "icon,groupID"],
             ["lists", "delete", "L", "--yes"], ["lists", "clear-completed", "L", "--yes"],
             ["groups"], ["groups", "add", "Work"], ["groups", "rename", "G", "--name", "New"], ["groups", "delete", "G", "--yes"],
             ["sections", "--list", "L"], ["sections", "add", "A", "--list", "L"],
@@ -75,14 +77,14 @@ struct ParserTests {
         #expect(try command(["delete", "id", "--version", "v"]) == .delete(id: "id", version: "v"))
         #expect(try command(["restore", "id", "--list", "L"]) == .restore(id: "id", list: "L"))
         #expect(try command(["deleted"]) == .deleted)
-        #expect(try command(["catalog"]) == .catalog(includeTags: true))
-        #expect(try command(["tags"]) == .catalog(includeTags: true))
-        for family in ["lists", "groups", "sections", "smart-lists", "templates"] {
-            #expect(try command([family]) == .catalog(includeTags: false))
+        for scope in CatalogScope.allCases {
+            let family = scope == .smartLists ? "smart-lists" : scope.rawValue
+            #expect(try command([family]) == .catalog(scope))
         }
+        #expect(try command(["sections", "--list", "A:B"]) == .catalog(.sections, list: "A:B"))
         #expect(try command(["image", "id", "image"]) == .image(reminderID: "id", imageID: "image"))
-        #expect(try CLIParser.parse(["--json", "doctor"]) == Invocation(request: .doctor, json: true))
-        #expect(try CLIParser.parse(["setup"]).request == .setup)
+        #expect(try CLIParser.parse(["--json", "doctor"]) == Invocation(request: .worker(.doctor), json: true))
+        #expect(try CLIParser.parse(["setup"]).request == .worker(.setup))
     }
     @Test func invalidInputsDoNotReadImageOrReachWorker() {
         let samples: [[String]] = [
@@ -119,7 +121,7 @@ struct ParserTests {
     @Test func imageBytesAreReadInFrontend() throws {
         var paths: [String] = []
         let invocation = try CLIParser.parse(["add", "T", "--list", "L", "--image", "/private/photo.png", "--image-type", "image/png"], readImage: { path in paths.append(path); return Data([1, 2, 3]) })
-        guard case .operation(.create(let draft), _) = invocation.request else { throw CLIParser.invalid("Expected create") }
+        guard case .worker(.operation(.create(let draft))) = invocation.request else { throw CLIParser.invalid("Expected create") }
         #expect(paths == ["/private/photo.png"])
         #expect(draft.images == [ImageInput(fileName: "photo.png", contentType: "image/png", bytes: Data([1, 2, 3]))])
         let encoded = String(decoding: try JSONEncoder().encode(draft), as: UTF8.self)

@@ -32,13 +32,19 @@ private final class MemoryBackend: ReminderBackend {
     func checkSupport(for command: Command) throws {
         if unsupported { throw Failure(.unsupported, "Missing native selector") }
     }
-    var catalogProjections: [Bool] = []
-    func catalog(includeTags: Bool) throws -> Catalog {
-        catalogProjections.append(includeTags)
+    var catalogScopes: [Set<CatalogScope>] = []
+    var sectionLists: [String?] = []
+    func catalog(_ scopes: Set<CatalogScope>, listID: String? = nil) throws -> Catalog {
+        catalogScopes.append(scopes)
         if let readError { throw readError }
-        var result = data
-        if !includeTags { result.tags = [] }
-        return result
+        let all = scopes.contains(.all)
+        if scopes.contains(.sections) { sectionLists.append(listID) }
+        return Catalog(lists: all || scopes.contains(.lists) ? data.lists : [],
+            groups: all || scopes.contains(.groups) ? data.groups : [],
+            sections: all || scopes.contains(.sections) ? data.sections.filter { listID == nil || $0.listID == listID } : [],
+            tags: all || scopes.contains(.tags) ? data.tags : [],
+            smartLists: all || scopes.contains(.smartLists) ? data.smartLists : [],
+            templates: all || scopes.contains(.templates) ? data.templates : [])
     }
     var lastQuery: ReminderQuery?
     var enumerationError: Failure?
@@ -110,10 +116,15 @@ private final class MemoryBackend: ReminderBackend {
         }
         return MutationResult(affectedIDs: ids + restoreAuxiliaryIDs)
     }
-    func list(_ action: ListAction) throws -> MutationResult {
-        try begin(); actions.append(.list(action))
-        if case .delete(let id, _) = action { return MutationResult(affectedIDs: listReceiptIDs ?? [id]) }
-        return MutationResult(affectedIDs: ["list"])
+    var listUpdates: [(String, ListFields)] = []
+    func createList(_ fields: ListFields) throws -> MutationResult {
+        try begin(); actions.append(.list(.create(fields))); return MutationResult(affectedIDs: ["list"])
+    }
+    func updateList(id: String, fields: ListFields) throws -> MutationResult {
+        try begin(); listUpdates.append((id, fields)); return MutationResult(affectedIDs: [id])
+    }
+    func deleteList(id: String) throws -> MutationResult {
+        try begin(); actions.append(.list(.delete(id, confirmed: true))); return MutationResult(affectedIDs: listReceiptIDs ?? [id])
     }
     func group(_ action: GroupAction) throws -> MutationResult { try begin(); actions.append(.group(action)); return MutationResult(affectedIDs: ["group"]) }
     func section(_ action: SectionAction) throws -> MutationResult { try begin(); actions.append(.section(action)); return MutationResult(affectedIDs: ["section"]) }
@@ -148,18 +159,18 @@ struct OperationsTests {
         backend.items["R1"] = Reminder(id: "R1", fields: ReminderFields(title: "Task", listID: "L1"))
         try body(backend, directory.appendingPathComponent("deleted.json"))
     }
-    @Test func testCatalogProjectionSeparatesResolutionFromTagCounts() throws {
+    @Test func catalogScopesSeparateResolutionFromUnrelatedFamilies() throws {
         try fixture { backend, url in
             let engine = Operations(backend: backend, journalURL: url)
             var patch = ReminderPatch(); patch.title = .set("Edited")
             let version = try backend.items["R1"]!.version()
             #expect(engine.execute(.update(id: "R1", version: version, patch: patch)).status == .ok)
-            #expect(backend.catalogProjections == [false])
-            backend.catalogProjections = []
-            #expect(engine.execute(.catalog(includeTags: false)).status == .ok)
-            #expect(engine.execute(.catalog(includeTags: true)).status == .ok)
+            #expect(backend.catalogScopes == [[.lists]])
+            backend.catalogScopes = []
+            #expect(engine.execute(.catalog(.lists)).status == .ok)
+            #expect(engine.execute(.catalog(.all)).status == .ok)
             #expect(engine.execute(.tag(.rename("work", name: "job"))).status == .ok)
-            #expect(backend.catalogProjections == [false, true])
+            #expect(backend.catalogScopes == [[.lists], [.all]])
         }
     }
     @Test func tagMutationPassesNativeAliasWithoutCatalogRead() throws {
@@ -175,7 +186,7 @@ struct OperationsTests {
             #expect(engine.execute(.tag(rename)).status == .ok)
             #expect(engine.execute(.tag(delete)).status == .ok)
             #expect(backend.actions == [.tag(rename), .tag(delete)])
-            #expect(backend.catalogProjections.isEmpty)
+            #expect(backend.catalogScopes.isEmpty)
         }
     }
     @Test func restoredChildReceiptAllowsOnlyItsActualActiveParentAndKeepsParentJournal() throws {
@@ -226,10 +237,72 @@ struct OperationsTests {
             #expect(try journal.read() == saved)
         }
     }
+    @Test func sectionCatalogResolvesExactListBeforeScopedNativeRead() throws {
+        try fixture { backend, url in
+            backend.data.lists[0].fields.name = "Home:Today"
+            backend.data.sections.append(Section(id: "OTHER", name: "Elsewhere", listID: "L2"))
+            let engine = Operations(backend: backend, journalURL: url)
+            let result = engine.execute(.catalog(.sections, list: "Home:Today"))
+            #expect(result.result == .catalog(Catalog(sections: Array(backend.data.sections.prefix(2))), scope: .sections))
+            #expect(backend.catalogScopes == [[.lists], [.sections]]); #expect(backend.sectionLists == ["L1"])
+            backend.catalogScopes = []; backend.sectionLists = []
+            #expect(engine.execute(.catalog(.sections, list: "missing")).error?.code == .notFound)
+            #expect(backend.catalogScopes == [[.lists]]); #expect(backend.sectionLists.isEmpty)
+            backend.data.lists[1].fields.name = "Home:Today"
+            #expect(engine.execute(.catalog(.sections, list: "Home:Today")).error?.code == .ambiguous)
+            #expect(engine.execute(.catalog(.sections, list: "l1")).status == .ok)
+            #expect(engine.execute(.catalog(.tags, list: "L1")).error?.code == .invalidInput)
+        }
+    }
+    @Test func reminderCreationAndSectionEditsReadOnlyNeededContainers() throws {
+        try fixture { backend, url in
+            let engine = Operations(backend: backend, journalURL: url)
+            let draft = ReminderDraft(fields: ReminderFields(title: "New", listID: "Inbox", sectionID: "First"))
+            #expect(engine.execute(.create(draft)).status == .ok)
+            #expect(backend.catalogScopes == [[.lists], [.sections]]); #expect(backend.sectionLists == ["L1"])
+            backend.catalogScopes = []; backend.sectionLists = []
+            var patch = ReminderPatch(); patch.sectionID = .set("Second")
+            let version = try backend.items["R1"]!.version()
+            #expect(engine.execute(.update(id: "R1", version: version, patch: patch)).status == .ok)
+            #expect(backend.catalogScopes == [[.lists], [.sections]]); #expect(backend.sectionLists == ["L1"])
+        }
+    }
+    @Test func sparseListEditPreservesOmissionsAndExplicitFalseOrClear() throws {
+        try fixture { backend, url in
+            let old = ListFields(name: "Inbox", color: "blue", icon: "star", groupID: "G1", pinned: true,
+                kind: .groceries, sort: .priority, position: .before("L2"))
+            backend.data.lists[0].fields = old
+            let engine = Operations(backend: backend, journalURL: url)
+            var patch = ListPatch(); patch.name = "Renamed"
+            #expect(engine.execute(.list(.update("Inbox", patch))).status == .ok)
+            var expected = old; expected.name = "Renamed"; expected.position = nil
+            #expect(backend.listUpdates.last?.0 == "L1"); #expect(backend.listUpdates.last?.1 == expected)
+            patch = ListPatch(); patch.pinned = false; patch.sort = .due
+            #expect(engine.execute(.list(.update("l1", patch, clear: [.color, .icon, .groupID]))).status == .ok)
+            expected = old; expected.pinned = false; expected.sort = .due; expected.position = nil
+            expected.color = nil; expected.icon = nil; expected.groupID = nil
+            #expect(backend.listUpdates.last?.1 == expected)
+            #expect(engine.execute(.list(.update("Inbox", ListPatch(), clear: [.icon]))).status == .ok)
+            #expect(backend.listUpdates.last?.1.icon == nil); #expect(backend.listUpdates.last?.1.color == "blue")
+            patch = ListPatch(); patch.groupID = "Group"
+            #expect(engine.execute(.list(.update("Inbox", patch))).status == .ok)
+            #expect(backend.listUpdates.last?.1.groupID == "G1")
+            let count = backend.mutationCalls
+            for (patch, clear): (ListPatch, [ListClear]) in [(ListPatch(), []), (patch, [.groupID]), (ListPatch(), [.color, .color])] {
+                #expect(engine.execute(.list(.update("Inbox", patch, clear: clear))).error?.code == .invalidInput)
+            }
+            patch = ListPatch(); patch.name = " "
+            #expect(engine.execute(.list(.update("Inbox", patch))).error?.code == .invalidInput)
+            patch = ListPatch(); patch.position = .before("L1")
+            #expect(engine.execute(.list(.update("Inbox", patch))).error?.code == .invalidInput)
+            #expect(backend.mutationCalls == count)
+        }
+    }
     @Test func findPassesNativeQueryAndReturnsBackendResults() throws {
         try fixture { backend, url in
             var query = ReminderQuery(); query.text = "does not match"; query.matching = .prefix
             query.list = "Inbox"; query.flagged = false; query.hasDueDate = false; query.offset = 2; query.limit = 3
+            query.scope = .title; query.tags = ["work"]; query.excludeTags = ["blocked"]; query.tagMatch = .any
             let result = Operations(backend: backend, journalURL: url).execute(.find(query))
             query.list = "L1"
             #expect(backend.lastQuery == query)
@@ -247,8 +320,15 @@ struct OperationsTests {
             q = ReminderQuery(); q.smartList = "Smart"; q.hasDueDate = false; invalid.append(q)
             q = ReminderQuery(); q.smartList = "Smart"; q.list = "Inbox"; invalid.append(q)
             q = ReminderQuery(); q.smartList = "Smart"; q.completed = true; invalid.append(q)
+            q = ReminderQuery(); q.scope = .title; invalid.append(q)
+            q = ReminderQuery(); q.tags = ["#bad"]; invalid.append(q)
+            q = ReminderQuery(); q.excludeTags = ["bad tag"]; invalid.append(q)
+            q = ReminderQuery(); q.tagMatch = .any; invalid.append(q)
+            q = ReminderQuery(); q.smartList = "Smart"; q.tags = ["work"]; invalid.append(q)
+            q = ReminderQuery(); q.smartList = "Smart"; q.excludeTags = ["blocked"]; invalid.append(q)
+            q = ReminderQuery(); q.smartList = "Smart"; q.text = "x"; q.scope = .title; invalid.append(q)
             for query in invalid { #expect(engine.execute(.find(query)).error?.code == .invalidInput) }
-            #expect(backend.lastQuery == nil); #expect(backend.catalogProjections.isEmpty)
+            #expect(backend.lastQuery == nil); #expect(backend.catalogScopes.isEmpty)
             q = ReminderQuery(); q.smartList = "Smart"; q.includeCompleted = true; q.offset = 2
             #expect(engine.execute(.find(q)).status == .ok)
             #expect(backend.lastQuery?.smartList == "SM1")
@@ -335,7 +415,7 @@ struct OperationsTests {
             for filter in filters {
                 #expect(engine.execute(.smartList(.create(SmartList(id: "", name: "Invalid", filters: [filter])))).error?.code == .invalidInput)
             }
-            #expect(backend.mutationCalls == 0); #expect(backend.catalogProjections.isEmpty)
+            #expect(backend.mutationCalls == 0); #expect(backend.catalogScopes.isEmpty)
         }
     }
     @Test func testVersionCoversEveryEditableFieldAndImageMetadata() throws {
@@ -426,7 +506,7 @@ struct OperationsTests {
             #expect(engine.execute(.find(ReminderQuery())).result == .reminders([]))
             let failure = Failure(.permission, "denied", affectedIDs: ["original-evidence"])
             backend.readError = failure
-            #expect(engine.execute(.catalog(includeTags: true)).error == failure)
+            #expect(engine.execute(.catalog(.all)).error == failure)
             #expect(engine.execute(.show("R1")).error == failure)
         }
     }
@@ -550,7 +630,7 @@ struct OperationsTests {
             backend.items = [:]
             let engine = Operations(backend: backend, journalURL: url)
             let commands: [Command] = [
-                .list(.create(ListFields(name: "New"))), .list(.update("Inbox", ListFields(name: "Renamed"))),
+                .list(.create(ListFields(name: "New"))), .list(.update("Inbox", { var p = ListPatch(); p.name = "Renamed"; return p }())),
                 .list(.clearCompleted("Inbox", confirmed: true)), .list(.delete("Work", confirmed: true)),
                 .group(.create("G")), .group(.rename("Group", name: "G")), .group(.delete("Group", confirmed: true)),
                 .section(.create(list: "Inbox", name: "S")), .section(.rename(list: "Inbox", section: "First", name: "N")),
@@ -563,7 +643,7 @@ struct OperationsTests {
                 .template(.use("Template", newListName: "From Template")), .template(.delete("Template", confirmed: true))
             ]
             for command in commands { #expect(engine.execute(command).status == .ok, "\(command)") }
-            #expect(backend.actions.count == commands.count - 1) // empty clear-completed has no native save
+            #expect(backend.actions.count + backend.listUpdates.count == commands.count - 1) // empty clear-completed has no native save
             #expect(backend.actions.contains(.section(.move(list: "L1", section: "S1", position: .after("S2")))))
             #expect(backend.actions.contains(.template(.create(name: "Saved", list: "L1", includeCompleted: true))))
             let count = backend.mutationCalls
@@ -700,6 +780,7 @@ struct OperationsTests {
             let result = Operations(backend: backend, journalURL: url).execute(.list(.clearCompleted("Inbox", confirmed: true)))
             #expect(result.status == .ok); #expect(backend.deleteCalls == [["R1"]])
             #expect(backend.items["late"] != nil); #expect(backend.actions.isEmpty)
+            #expect(backend.enumerationLists == ["L1"])
         }
     }
     @Test func reconciliationQueriesOutsideLockAndPreservesConcurrentEntries() throws {

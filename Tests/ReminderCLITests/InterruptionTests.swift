@@ -115,7 +115,7 @@ final class ProtocolBackend: ReminderBackend {
     func reminder(id: String) throws -> Reminder? {
         Reminder(id: id, fields: ReminderFields(title: "Protocol fixture", listID: "L", due: .date(CalendarDate(2030, 2, 3)), position: .after("neighbor")))
     }
-    func catalog(includeTags: Bool) throws -> Catalog { Catalog(lists: [ReminderList(id: "L", fields: ListFields(name: "Inbox"))]) }
+    func catalog(_ scopes: Set<CatalogScope>, listID: String? = nil) throws -> Catalog { Catalog(lists: [ReminderList(id: "L", fields: ListFields(name: "Inbox"))]) }
     func createReminder(_ draft: ReminderDraft) throws -> MutationResult { MutationResult(affectedIDs: ["created"], reminders: [Reminder(id: "created", fields: draft.fields)]) }
 }
 let args = CommandLine.arguments

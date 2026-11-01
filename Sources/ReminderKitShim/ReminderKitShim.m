@@ -328,7 +328,7 @@ static NSDictionary *ColorValue(id value) {
         @"id": ObjectID(list), @"name": Required(O(O(list, "storage"), "name"), @"List name"),
         @"shared": @(B(list, "isShared")), @"pinned": @(B(list, "isPinned")),
         @"groceries": @(B(O(list, "storage"), "shouldCategorizeGroceryItems")),
-        @"sections": [self sectionValues:list], @"members": [self sharees:list]
+        @"members": [self sharees:list]
     } mutableCopy];
     id parent = O(list, "parentList");
     Put(result, @"groupID", parent ? ObjectID(parent) : nil);
@@ -341,6 +341,14 @@ static NSDictionary *ColorValue(id value) {
     return [self guard:^id {
         NSMutableArray *result = [NSMutableArray array];
         for (id list in [self rawLists]) if (!B(list, "isGroup")) [result addObject:[self listValue:list]];
+        return result;
+    } error:error];
+}
+- (NSArray *)sectionsInList:(NSString *)listID error:(NSError **)error {
+    return [self guard:^id {
+        NSMutableArray *result = [NSMutableArray array];
+        for (id list in listID ? @[[self list:listID]] : [self rawLists])
+            if (!B(list, "isGroup")) [result addObjectsFromArray:[self sectionValues:list]];
         return result;
     } error:error];
 }
@@ -364,10 +372,16 @@ static NSDictionary *ColorValue(id value) {
     id result = [NSPropertyListSerialization propertyListWithData:Required(O(reply, "resultData"), @"Query result") options:0 format:nil error:&failure];
     return NativeResult(result, failure, @"Decode native query");
 }
+- (NSArray *)reminderIDsWithIncludedTags:(NSArray<NSString *> *)include excludedTags:(NSArray<NSString *> *)exclude matchAll:(BOOL)matchAll error:(NSError **)error {
+    return RNGuard(^id {
+        return UUIDs([self invoke:@"REMHashtagLabelDataView_ReminderIDsIncludeExcludeOperationInvocation"
+            parameters:@{@"include": include, @"exclude": exclude, @"operation": @{matchAll ? @"all" : @"any": @{}}} storages:@{}], @"uuid");
+    }, error);
+}
 - (NSArray *)reminderIDsForTag:(NSString *)name {
-    id rows = [self invoke:@"REMHashtagLabelDataView_ReminderIDsIncludeExcludeOperationInvocation"
-        parameters:@{@"include": @[name], @"exclude": @[], @"operation": @{@"all": @{}}} storages:@{}];
-    return UUIDs(rows, @"uuid");
+    NSError *error = nil;
+    id result = [self reminderIDsWithIncludedTags:@[name] excludedTags:@[] matchAll:YES error:&error];
+    return NativeResult(result, error, @"Select tag reminders");
 }
 - (NSSet *)hashtagIDsForNames:(NSArray<NSString *> *)names {
     id rows = [self invoke:@"REMHashtagLabelDataView_HashtagIDsWithHashtagLabelNamesInvocation"
