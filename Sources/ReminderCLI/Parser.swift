@@ -54,12 +54,19 @@ enum CLIParser {
                 if key == "image" { imagePath = text }
                 else if key == "image-type" { imageType = text }
                 else if option.hasSuffix("-json") {
-                    do { input[key] = try JSONDecoder().decode(JSONValue.self, from: Data(text.utf8)) }
+                    let value: JSONValue
+                    do { value = try JSONDecoder().decode(JSONValue.self, from: Data(text.utf8)) }
                     catch { throw invalid("Malformed JSON for --\(option): \(error)") }
+                    if key == "query" {
+                        guard case .object(let fields) = value, Set(fields.keys).isDisjoint(with: seen) else { throw invalid("Invalid or duplicate query fields") }
+                        seen.formUnion(fields.keys); input.merge(fields) { _, new in new }
+                    } else { input[key] = value }
                 }
                 else if ["clear", "removeImageIDs"].contains(key) { input[key] = .array(text.split(separator: ",", omittingEmptySubsequences: false).map { .string(String($0)) }) }
-                else if key == "limit" {
-                    guard let count = Int(text), count > 0 else { throw invalid("--limit must be positive") }; input[key] = .number(Decimal(count))
+                else if name == "find", ["limit", "offset"].contains(key) {
+                    guard let count = Int(text) else { throw invalid("--\(option) must be an integer") }; input[key] = .number(Decimal(count))
+                } else if name == "find", ["completed", "flagged", "urgent", "repeating", "hasLocation", "hasDueDate"].contains(key) {
+                    guard text == "true" || text == "false" else { throw invalid("--\(option) must be true or false") }; input[key] = .bool(text == "true")
                 } else { input[key] = .string(text) }
             } else { positional.append(arg) }
         }

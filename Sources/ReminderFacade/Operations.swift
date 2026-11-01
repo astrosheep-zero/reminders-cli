@@ -21,14 +21,21 @@ public struct OperationDefinition: Sendable {
     /// CLI names adapt the same parameters; no separate command allowlist or dispatch switch.
     public var options: [String: String] {
         var result = Dictionary(uniqueKeysWithValues: fields.keys.filter { !positional.contains($0) && $0 != "images" }.map { key in
-            let option = ["query": "query-json", "fields": "fields-json", "set": "set-json", "definition": "definition-json",
+            let option = ["fields": "fields-json", "set": "set-json", "definition": "definition-json",
                 "position": "position-json", "confirmed": "yes", "includeCompleted": "include-completed", "removeImageIDs": "remove-images"][key] ?? key
+            if name == "find" {
+                let kebab = key.reduce(into: "") { result, char in
+                    if char.isUppercase { result.append("-"); result.append(contentsOf: char.lowercased()) } else { result.append(char) }
+                }
+                return (kebab + (["tags", "excludeTags"].contains(key) ? "-json" : ""), key)
+            }
             return (option, key)
         })
+        if name == "find" { result["query-json"] = "query" }
         if fields["images"] != nil { result["image"] = "image"; result["image-type"] = "image-type" }
         return result
     }
-    public func isSwitch(_ key: String) -> Bool { if case .scalar("boolean", _) = fields[key] { true } else { false } }
+    public func isSwitch(_ key: String) -> Bool { if name == "find" { return key == "includeCompleted" }; if case .scalar("boolean", _) = fields[key] { return true }; return false }
 }
 
 struct Arguments {
@@ -63,10 +70,8 @@ struct Arguments {
 public enum FacadeOperations {
     public static let definitions: [OperationDefinition] = [
         .init("doctor", "", [:], "Inspect bundle/signature/authorization. Sentinel read only if already authorized; never prompts. A diagnostic report is not proof every check passed.") { _ in .doctor },
-        .init("find", "", ["query": Shapes.query, "text": .string, "list": .string, "limit": .int], "Find using native criteria or a smart list. completed overrides includeCompleted for ordinary queries. Default excludes completed; limit 100, offset 0.") { a in
-            var query = try a.merged(ReminderQuery(), "query")
-            if let text = a.text("text") { query.text = text }; if let list = a.text("list") { query.list = list }
-            if a.values["limit"] != nil { query.limit = try a.decode(Int.self, "limit") }
+        .init("find", "", Shapes.query, "Find using native criteria or a smart list. completed overrides includeCompleted for ordinary queries. Default excludes completed; limit 100, offset 0. CLI --query-json expands these fields; duplicate sources are rejected. Boolean filters take true/false; --include-completed is a switch.") { a in
+            let query = try Arguments(values: ["query": .object(a.values)]).merged(ReminderQuery(), "query")
             try Validation.query(query); return .operation(.find(query))
         },
         .init("show", "id", ["id": .string], "Show ID or native title-equals match, including an optimistic version token.") { .operation(.show($0.id)) },

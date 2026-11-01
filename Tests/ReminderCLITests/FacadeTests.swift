@@ -9,7 +9,7 @@ struct FacadeTests {
     @Test func everyOperationHasStableSchemaAndTypedDispatch() throws {
         let samples: [(String, String, WorkerRequest)] = [
             ("doctor", "{}", .doctor),
-            ("find", #"{"query":{"includeCompleted":true},"limit":2}"#, .operation(.find({ var q = ReminderQuery(); q.includeCompleted = true; q.limit = 2; return q }()))),
+            ("find", #"{"includeCompleted":true,"limit":2}"#, .operation(.find({ var q = ReminderQuery(); q.includeCompleted = true; q.limit = 2; return q }()))),
             ("show", #"{"id":"R"}"#, .operation(.show("R"))),
             ("add", #"{"title":"T","list":"L"}"#, .operation(.create(ReminderDraft(fields: ReminderFields(title: "T", listID: "L"))))),
             ("edit", #"{"id":"R","version":"V","set":{"flagged":false},"clear":["due"]}"#, .operation(.update(id: "R", version: "V", patch: { var p = ReminderPatch(); p.flagged = .set(false); p.due = .clear; return p }()))),
@@ -64,10 +64,11 @@ struct FacadeTests {
         var patch = ListPatch(); patch.name = "Only rename"
         #expect(try FacadeOperations.prepare("lists_edit", arguments: arguments(#"{"id":"L","fields":{"name":"Only rename"}}"#)) == .operation(.list(.update("L", patch))))
         #expect(try FacadeOperations.prepare("lists_edit", arguments: arguments(#"{"id":"L","clear":["color","icon","groupID"]}"#)) == .operation(.list(.update("L", ListPatch(), clear: [.color, .icon, .groupID]))))
-        let request = try FacadeOperations.prepare("find", arguments: arguments(#"{"query":{"text":"fish","matching":"prefix","tags":["work","home"],"excludeTags":["blocked"],"tagMatch":"any"}}"#))
+        let request = try FacadeOperations.prepare("find", arguments: arguments(#"{"text":"fish","matching":"prefix","tags":["work","home"],"excludeTags":["blocked"],"tagMatch":"any","flagged":false,"limit":12,"offset":4}"#))
         guard case .operation(.find(let query)) = request else { throw invalid("Expected find") }
         #expect(query.text == "fish"); #expect(query.matching == .prefix)
         #expect(query.tags == ["work", "home"]); #expect(query.excludeTags == ["blocked"]); #expect(query.tagMatch == .any)
+        #expect(query.flagged == false); #expect(query.limit == 12); #expect(query.offset == 4)
         let edit = try #require(FacadeOperations.definitions.first { $0.toolName == "lists_edit" })
         #expect(try JSONValue.properties(edit.inputSchema)["required"] == .array([.string("id")]))
     }
@@ -95,21 +96,21 @@ struct FacadeTests {
             ("lists_edit", #"{"id":"L","fields":{"color":null}}"#),
             ("smart_lists_edit", #"{"id":"S","definition":{"name":"N"}}"#),
             ("smart_lists_add", #"{"name":"N","definition":{"filters":[{"kind":"unknown","key":"x","payload":"AQ=="}]}}"#),
-            ("find", #"{"limit":1.5}"#), ("find", #"{"limit":0}"#),
-            ("find", #"{"query":{"offset":-1}}"#), ("find", #"{"query":{"text":"   "}}"#),
-            ("find", #"{"query":{"matching":"exact"}}"#), ("find", #"{"query":{"matching":"bad","text":"x"}}"#),
-            ("find", #"{"query":{"smartList":"S","flagged":false}}"#),
-            ("find", #"{"query":{"smartList":"S","completed":true}}"#),
+            ("find", #"{"query":{}}"#), ("find", #"{"scope":"title"}"#), ("find", #"{"limit":1.5}"#), ("find", #"{"limit":0}"#),
+            ("find", #"{"offset":-1}"#), ("find", #"{"text":"   "}"#),
+            ("find", #"{"matching":"exact"}"#), ("find", #"{"matching":"bad","text":"x"}"#),
+            ("find", #"{"smartList":"S","flagged":false}"#),
+            ("find", #"{"smartList":"S","completed":true}"#),
             ("smart_lists_add", #"{"name":"N","definition":{"filters":[{"kind":"time","fromHour":8,"fromMinute":0,"toHour":17,"toMinute":0}]}}"#),
             ("smart_lists_add", #"{"name":"N","definition":{"filters":[{"kind":"date","value":{"kind":"overdue"}}]}}"#),
             ("smart_lists_add", #"{"name":"N","definition":{"filters":[{"kind":"location","value":"arriving"}]}}"#),
             ("smart_lists_add", #"{"name":"N","definition":{"filters":[{"kind":"priorities","value":["none"]}]}}"#),
             ("smart_lists_add", #"{"name":"N","definition":{"filters":[{"kind":"date","value":{"kind":"relative","past":0,"future":1,"unit":"minutes"}}]}}"#),
-            ("find", #"{"query":{"section":"S"}}"#), ("find", #"{"query":{"tags":[""]}}"#),
-            ("find", #"{"query":{"text":"fish","scope":"title"}}"#),
-            ("find", #"{"query":{"tagMatch":"any"}}"#), ("find", #"{"query":{"tagMatch":"bad","tags":["x"]}}"#),
-            ("find", #"{"query":{"smartList":"S","excludeTags":["x"]}}"#),
-            ("find", #"{"query":{"assigneeID":"A"}}"#), ("find", #"{"query":{"dueBefore":{}}}"#), ("image", #"{"id":"R"}"#)
+            ("find", #"{"section":"S"}"#), ("find", #"{"tags":[""]}"#),
+            ("find", #"{"text":"fish","scope":"title"}"#),
+            ("find", #"{"tagMatch":"any"}"#), ("find", #"{"tagMatch":"bad","tags":["x"]}"#),
+            ("find", #"{"smartList":"S","excludeTags":["x"]}"#),
+            ("find", #"{"assigneeID":"A"}"#), ("find", #"{"dueBefore":{}}"#), ("image", #"{"id":"R"}"#)
         ]
         for (name, text) in samples {
             do { _ = try FacadeOperations.prepare(name, arguments: arguments(text)); Issue.record("Expected invalid input") }

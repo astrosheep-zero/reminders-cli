@@ -96,10 +96,10 @@ enum Shapes {
         "priority": priority, "flagged": .bool, "urgent": .bool, "completed": .bool, "tags": .array(.string),
         "parentID": .string, "sectionID": .string, "position": position, "assigneeID": .string]
     static let fields = Schema.fields(reminderFields)
-    static let query = Schema.fields(["text": .string, "matching": .choice("exact prefix word"),
+    static let query: [String: Schema] = ["text": .string, "matching": .choice("exact prefix word"),
         "tags": .array(.string), "excludeTags": .array(.string), "tagMatch": .choice("all any"), "list": .string, "smartList": .string,
         "includeCompleted": .bool, "completed": .bool, "flagged": .bool, "urgent": .bool, "repeating": .bool, "hasLocation": .bool,
-        "hasDueDate": .bool, "limit": .int, "offset": .int])
+        "hasDueDate": .bool, "limit": .int, "offset": .int]
     static let list = Schema.fields(["name": .string, "color": .string, "icon": .string, "groupID": .string,
         "pinned": .bool, "kind": .choice("standard groceries"), "sort": .choice("manual due creation priority title"), "position": position])
     static let filter = Schema.tagged([

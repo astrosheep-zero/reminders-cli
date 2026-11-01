@@ -40,6 +40,12 @@ struct ParserTests {
         #expect(query.limit == 12); #expect(query.flagged == false); #expect(query.includeCompleted); #expect(query.completed == true)
         #expect(query.matching == .prefix); #expect(query.offset == 4); #expect(query.hasDueDate == false)
         #expect(query.text == "coffee"); #expect(query.tags == ["work", "home"]); #expect(query.excludeTags == ["blocked"]); #expect(query.tagMatch == .any)
+        let flags = ["find", "--text", "coffee", "--matching", "prefix", "--tags-json", #"["work","home"]"#, "--exclude-tags-json", #"["blocked"]"#, "--tag-match", "any", "--include-completed", "--completed", "true", "--flagged", "false", "--repeating", "true", "--has-location", "true", "--has-due-date", "false", "--offset", "4", "--limit", "12"]
+        #expect(try command(flags) == .find(query))
+        for args in [["find", "--text", "coffee", "--query-json", #"{"text":"coffee"}"#], ["find", "--query-json", #"{"text":"coffee"}"#, "--text", "coffee"], ["find", "--query-json", #"{"scope":"title"}"#], ["find", "--query-json", #"{"query":{}}"#], ["find", "--flagged", "no"], ["find", "--offset", "-1"]] {
+            do { _ = try command(args); Issue.record("Expected invalid input") }
+            catch let error as Failure { #expect(error.code == .invalidInput) }
+        }
         let filters: [SmartFilter] = [.tags(["work"], match: .all), .date(.relative(past: 0, future: 7, unit: .days)), .priorities([.high]), .flagged(true), .lists(["L"]), .location(.gettingInCar)]
         let text = #"[{"kind":"tags","value":["work"],"match":"all"},{"kind":"date","value":{"kind":"relative","past":0,"future":7,"unit":"days"}},{"kind":"priorities","value":["high"]},{"kind":"flagged","value":true},{"kind":"lists","value":["L"]},{"kind":"location","value":"gettingInCar"}]"#
         guard case .smartList(.create(let smart)) = try command(["smart-lists", "add", "Today", "--definition-json", "{\"filters\":\(text)}"]) else { throw CLIParser.invalid("Expected smart list") }

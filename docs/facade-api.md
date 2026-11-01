@@ -75,7 +75,7 @@ Date filters also model `none`. Relative ranges require nonnegative counts, exac
 
 | Operation | Arguments |
 |---|---|
-| `find` | Optional `query` object, with optional top-level `text`, `list`, `limit` overrides |
+| `find` | Optional query fields directly at top level; no `query` wrapper |
 | `show` | `id` (ID or native title-equals match) |
 | `add` | `title`; optional `list`, `fields`, `images`; omitted list inherits parent or uses the unique default |
 | `edit` | `id`, `version`, optional `set`, `clear`, `images`, `removeImageIDs`; at least one change |
@@ -95,6 +95,8 @@ Date filters also model `none`. Relative ranges require nonnegative counts, exac
 
 Reminder `fields`/`set` keys: `title`, `listID`, `notes`, `due`, `start`, `recurrence`, `earlyAlerts`, `location`, `contact`, `url`, `priority`, `flagged`, `urgent`, `completed`, `tags`, `parentID`, `sectionID`, `position`, `assigneeID`. Priority is `none/low/medium/high`; flags are booleans and tags are string arrays. Creation fields overlay Core defaults but cannot change the positional title or conflict with an explicitly supplied top-level `list`. If top-level `list` is omitted, `fields.listID` is allowed; an empty listID passes unchanged to Core for parent-list inheritance or unique-default selection. Edit sets preserve false/empty string/empty array; `clear` is an array of field names, disjoint from `set`. Missing fields remain absent. List edits merge supplied fields over the current list in Core: omitted color/icon/group/pin/kind/sort/name remain unchanged, false is a real update, and only explicit `clear` removes optional color/icon/groupID. Duplicate or conflicting fields/clear, nulls and empty edits fail. Position omission is always a write-only no-ordering directive, never replayed from an old snapshot. Core validates the merged fields and resolves grouping/neighbor names before entering the backend; this is optimistic read/merge/save, not cross-device CAS.
 
+CLI `--query-json` is a shorthand for the same top-level fields. Supplying a field in both JSON and a flag fails regardless of order. All fields have kebab-case flags; arrays use `--tags-json` and `--exclude-tags-json`, `--include-completed` is a switch, and other boolean filters take literal `true` or `false`.
+
 Query keys: `text`, `matching` (`exact`, `prefix`, `word`), `tags`, `excludeTags`, `tagMatch` (`all`, `any`), `list`, `smartList`, `includeCompleted`, `completed`, `flagged`, `urgent`, `repeating`, `hasLocation`, `hasDueDate`, `limit`, `offset`. Matching requires nonblank text and defaults to `word`; text uses native `textualField` criteria. Search `scope` is not exposed and is rejected by the shared schema. Tags/excludeTags are label arrays (no #/whitespace/NUL), omitted/empty arrays add no filtering, included tags default to all-of, and tagMatch requires nonempty included tags. Native hashtag include/exclude selection runs first: empty IDs return []; with criteria the IDs become an objectID criterion; unconstrained tag reads (`includeCompleted:true`) slice the IDs before batch hydration. Default incomplete-only and explicit completed constraints remain native search criteria, not local filters. Unverified optional-date criterion encodings are not exposed. For ordinary queries, explicit `completed:true/false` overrides `includeCompleted` and selects only completed/incomplete reminders; with `completed` omitted, `includeCompleted:true` selects all and false/default selects incomplete. Smart-list mode rejects `completed` and other criteria, but allows `includeCompleted`, limit and offset. Default limit is 100, offset 0. Criteria are matched and paged by native search in native order. Smart-list paging slices native IDs in returned order; neither mode promises a stable snapshot across requests.
 
 List fields: `name`, `color`, `icon`, `groupID`, `pinned`, `kind` (`standard/groceries`), `sort` (`manual/due/creation/priority/title`), `position`. Smart definitions: `id`, `name`, optional `color`/`icon`, `match` (`all/any`), `filters`. Creation defaults are retained for omitted fields. List edits preserve omissions and use explicit clear; only smart-list full replacements omit optional fields to clear them. Neither accepts null as a clearing instruction.
@@ -109,7 +111,7 @@ Examples of `tools/call` arguments:
 {"name":"sections_move","arguments":{"id":"SECTION_ID","list":"LIST_ID","position":{"kind":"after","value":"OTHER_SECTION_ID"}}}
 {"name":"lists_edit","arguments":{"id":"LIST_ID","fields":{"name":"Renamed"}}}
 {"name":"lists_edit","arguments":{"id":"LIST_ID","fields":{"pinned":false},"clear":["icon","groupID"]}}
-{"name":"find","arguments":{"query":{"text":"fish","tags":["work","home"],"excludeTags":["blocked"],"tagMatch":"any"}}}
+{"name":"find","arguments":{"text":"fish","tags":["work","home"],"excludeTags":["blocked"],"tagMatch":"any"}}
 ```
 
 ## Results, cancellation and uncertainty
