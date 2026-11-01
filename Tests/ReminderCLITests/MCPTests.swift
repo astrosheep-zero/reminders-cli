@@ -18,7 +18,7 @@ struct MCPTests {
             try await service.start(transport: pair.server)
             let initialized = try await client.connect(transport: pair.client)
             #expect(initialized.protocolVersion == "2025-11-25")
-            #expect(initialized.serverInfo.version == "0.1.1"); #expect(initialized.capabilities.tools != nil)
+            #expect(initialized.serverInfo.version == "0.2.0"); #expect(initialized.capabilities.tools != nil)
             let (tools, next) = try await client.listTools()
             #expect(next == nil); #expect(Set(tools.map(\.name)) == Set(FacadeOperations.definitions.map(\.toolName)))
             #expect(!tools.contains { $0.name == "setup" })

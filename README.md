@@ -36,7 +36,7 @@ Only full Reminders access is requested. No Full Disk Access, Automation, Access
 
 ## MCP
 
-Run `reminder mcp` through a stdio MCP client. The official Swift SDK exposes 36 tools with the same schema, validation, worker isolation and output envelopes as the CLI. Permission setup remains an explicit CLI command. See the [complete facade/MCP contract](docs/facade-api.md) and [client configuration](docs/install.md#mcp-client-configuration).
+Run `reminder mcp` through a stdio MCP client. The official Swift SDK exposes 35 tools with the same schema, validation, worker isolation and output envelopes as the CLI. Permission setup remains an explicit CLI command. See the [complete facade/MCP contract](docs/facade-api.md) and [client configuration](docs/install.md#mcp-client-configuration).
 
 ## Commands
 

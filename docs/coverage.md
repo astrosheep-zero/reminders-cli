@@ -57,9 +57,9 @@ Every data family below is available through peer CLI/MCP frontends using the sa
 | Images | Frontend bytes, worker-owned private staging, distinct new attachment IDs/non-staging URLs before cleanup; metadata-only ordinary reads | Prior live add/remove/metadata and parent-image restore; explicit byte read **failed 257**. Current image fixture/lease/creation-translation coverage; no new live repair claim. |
 | Move/order/subtasks | One level, same-list parent/section/neighbor checks; no clone-delete move; no parent move with children | Prior live including independent child restore; current strict relationship/receipt/journal tests. Reminder position clear remains unsupported; list position omission is no ordering request. |
 | Shared assignment | Already-joined member ID/name or `me`; member enumeration | Prior live assignment; current resolution/translation fixtures. No invitations/account selection. |
-| Lists | Metadata enumeration/default marker, create/full replacement edit/delete/clear-completed; appearance/group/pin/kind/sort/order | Prior live; current full family dispatch/Core fixtures. No system-default setter; unsupported native sort/account shapes refuse. |
+| Lists | Metadata enumeration/default marker, create/sparse edit/delete/clear-completed; appearance/group/pin/kind/sort/order | Prior live; current full family dispatch/Core fixtures. No system-default setter; unsupported native sort/account shapes refuse. |
 | Groups | Enumerate/add/rename/delete, confirmed destructive operations | Prior live; current dispatch/Core tests. Nonempty group deletion refuses. |
-| Sections | Optional list-scoped listing, add/rename/move/delete | Prior live; current typed schema/dispatch/Native fixtures. Neighbor must be in the same list. |
+| Sections | Optional list-scoped listing, add/sparse edit/delete; name and position share one save | Prior live; current typed schema/dispatch/Native fixtures. Neighbor must be in the same list. |
 | Tags | Counts/enumeration/rename/remove with request-owned affected reminders | Prior live; current catalog/receipt fixtures. Tag/full-catalog reads count native-selected IDs; tag mutations select native reminder/hashtag IDs directly and validate receipt membership. |
 | Smart lists | Native CRUD/content evaluation; opaque unknown filters preserved on read | Prior live supported filters and explicit unsupported refusals; current schema/Native fixtures. Arbitrary time, overdue-only, coordinate-free place, bidirectional/minute relative ranges, duplicate native filter families/no-priority remain unsupported. Lists with unknown filters are read-only. |
 | Templates | Native list/create/include-completed/use/delete, no synthetic cloning | Prior live including instantiated content; current typed dispatch/Native fixtures. Account capabilities may refuse. |
@@ -76,15 +76,17 @@ A missing selector/account capability is explicit `unsupported`, never fabricate
 | Check | Result |
 |---|---|
 | `swift build` | Pass; executable/Swift/C/Objective-C modules compile, no distribution signing script |
-| `bash scripts/test.sh` | **128 passed**: Runtime 15, Native 43, Core 42, CLI/facade/MCP 28 |
-| Official SDK client/server | Initialize 2025-11-25, version 0.1.1, complete tool list, real facade/Core/Runtime calls, structured + text output, wrong/corrupt/contradictory final results |
+| `bash scripts/test.sh` | **159 passed**: Runtime 15, Native 58, Core 51, CLI/facade/MCP 35 |
+| Official SDK client/server | Initialize 2025-11-25, version 0.2.0, complete tool list, real facade/Core/Runtime calls, structured + text output, wrong/corrupt/contradictory final results |
 | Actual `reminder mcp` stdio executable | Initialize/list/invalid arguments/EOF exit, without Native access |
 | Cancellation | Task/SDK notification propagation; pre/post-marker classification; pending cancellation and shutdown do not spawn; active worker reaped; SDK ping remains responsive |
-| Shared schemas | All 36 tool descriptors have typed dispatch tests; unknown/null/internal-enum/nested fields and missing replacement fields refuse; stable output/version/opaque read preservation |
+| Shared schemas | All 35 tool descriptors have typed dispatch tests; unknown/null/internal-enum/nested fields, conflicting input sources, empty edits and invalid creation fields refuse; stable output/version/opaque read preservation |
 | Native deduplication | All closed feature-token ABI metadata checks; creation uses real sparse translator; request-owned tracking/staging/readback fixtures |
 | `git diff --check` | Pass at final review |
 
 The genuine Swift Testing wrapper explicitly loads the installed TestingMacros plugin and disables unavailable XCTest discovery on this CLT installation; it is not a behavior workaround or an old-API shim. Compiler/linker warnings about nonexistent optional CLT framework/library search directories remain environmental. Verification uses installed Swift **6.4.2**. Resolved manifests are compatible with the advertised Swift 6.2 floor (Collections **1.6.0**, not 1.7.5), but an actual Swift 6.2 compiler build was not run.
+
+The pre-existing normal-worker-exit timing assertion also failed during interface integration and final v0.2.0 release verification; unchanged full reruns passed. Its time limit was not relaxed. The v0.2.0 simplification preserves the existing tests and removes no safety checks. New sparse smart-list/section and normalized-input evidence is offline; earlier signed live results above do not certify these new mutation paths.
 
 One pre-existing Runtime fixture assertion was racy: its observable side effect was written after corruption had already allowed Runtime to terminate the worker. The deliberately corrupt fixture now records that side effect before exposing malformed stdout, deterministically testing conservative unknown classification without delaying or weakening production Runtime behavior. The full suite passes after this fixture correction.
 
@@ -96,16 +98,18 @@ Physical source lines include comments/blanks and Swift/C/Objective-C/public hea
 
 | Production area | Lines |
 |---|---:|
-| CLI | 368 |
-| Shared facade | 555 |
+| CLI | 369 |
+| Shared facade | 578 |
 | MCP adapter | 52 |
-| Core | 1,246 |
+| Core | 1,331 |
 | Runtime + C/header | 674 |
-| Native + Objective-C/header | 2,102 |
-| **Total** | **4,997** |
-| **Net change from starting worktree** | **+178** |
+| Native + Objective-C/header | 2,128 |
+| **Total** | **5,132** |
+| **Net change from original starting worktree** | **+313** |
 
-Tests are separate: **3,044 lines**. The original facade/MCP release was 4,817 production lines (−2); the subsequent correctness/performance/native-API work adds 180 production lines (the latest native-API expansion adds 29 versus the preceding 4,968-line worktree). There is no minification, source moved into tests, or compatibility shim recreating a removed public API. Simplification removes the duplicated CLI command allowlist/dispatch in favor of registry-attached typed closures; centralizes public enum schema/codec/output mapping; shares native create/update staging/receipt confirmation and guarded entity save edges; replaces repeated ABI-check branches with one closed signature table; generates identical typed Objective-C send fences; shares creation/sparse-field translation and Core civil components; removes manual per-field patch decoding and an unused section bridge/placeholder. Core mutation count stays computed and is emitted once by facade presentation.
+Tests are separate: **3,641 lines**. The v0.2.0 simplification round reduces production sources from 5,155 to 5,132 (**−23**). Restore uses one ordered per-ID journal snapshot index instead of a custom hash adapter and a second first-entry index; exact-entry equality still protects concurrent deletion intents. Existing optional-ID equality and outer error normalization replace duplicate checks, and partial readback evidence no longer needs a separate boolean. The full existing suite is retained. There is no minification, source moved into tests, or compatibility shim.
+
+The preceding public-interface changes added 129 lines against `e02a973` (5,026). After this round the aggregate is still **+106**, so the aggregate source-reduction requirement remains unresolved; fewer tools are not counted as fewer source lines. Earlier simplification already removed duplicate CLI dispatch, centralized schema/codec mapping, shared native save/readback paths and consolidated closed ABI checks. Those earlier changes are not credited again to this round.
 
 ## Live provenance and remaining work
 

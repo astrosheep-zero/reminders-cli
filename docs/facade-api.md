@@ -14,7 +14,7 @@ Each worker still handles exactly one request. Build identity checks, required d
 
 ## Tool discovery
 
-The SDK negotiates MCP **2025-11-25**, advertises tools only and registers `tools/list` and `tools/call`. Server version follows `CFBundleShortVersionString`, with development fallback `0.1.1`. There are no permission-requesting resources or prompts. The fixed tool list is a single page; an unknown cursor is rejected.
+The SDK negotiates MCP **2025-11-25**, advertises tools only and registers `tools/list` and `tools/call`. Server version follows `CFBundleShortVersionString`, with development fallback `0.2.0`. There are no permission-requesting resources or prompts. The fixed tool list is a single page; an unknown cursor is rejected.
 
 There are **35 tools**, with typed object schemas, required properties, closed nested objects, enum/variant alternatives, descriptions and conservative read-only/destructive/idempotency annotations:
 
